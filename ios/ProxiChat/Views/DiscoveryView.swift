@@ -52,9 +52,7 @@ struct DiscoveryView: View {
                     }
                 }
             }
-            .onAppear {
-                viewModel.startDiscovery()
-            }
+            // Discovery auto-starts in DiscoveryViewModel.init — don't call again here
             .sheet(isPresented: $showSettings) {
                 NavigationStack {
                     SettingsView(viewModel: SettingsViewModel(
