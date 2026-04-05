@@ -37,16 +37,17 @@ jobs:
         echo "=== Checking executable ==="
         file build/ProxiChat.app/ProxiChat
         echo "=== Info.plist ==="
-        cat build/ProxiChat.app/Info.plist | head -30
+        plutil -p build/ProxiChat.app/Info.plist
 
     - name: Create IPA
       run: |
-        mkdir -p Payload
-        cp -r build/ProxiChat.app Payload/
-        cd Payload && zip -r ../ProxiChat.ipa ProxiChat.app
+        mkdir -p stage/Payload
+        cp -r build/ProxiChat.app stage/Payload/
+        cd stage
+        zip -r -y ../ProxiChat.ipa Payload
         cd ..
-        echo "=== IPA contents ==="
-        unzip -l ProxiChat.ipa | head -20
+        echo "=== IPA structure (must show Payload/ProxiChat.app/) ==="
+        unzip -l ProxiChat.ipa | head -30
         echo "=== IPA size ==="
         ls -lh ProxiChat.ipa
 
