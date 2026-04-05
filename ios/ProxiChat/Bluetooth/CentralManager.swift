@@ -150,11 +150,20 @@ extension CentralManager: CBCentralManagerDelegate {
 
         DispatchQueue.main.async {
             let existing = self.discoveredDevices[id]
+
+            // Smooth RSSI to prevent jittering (30% new, 70% old)
+            let smoothedRssi: Int
+            if let existingRssi = existing?.rssi {
+                smoothedRssi = Int(Double(existingRssi) * 0.7 + Double(RSSI.intValue) * 0.3)
+            } else {
+                smoothedRssi = RSSI.intValue
+            }
+
             let device = ChatDevice(
                 id: id,
                 name: deviceName,
                 displayName: localName ?? existing?.displayName ?? deviceName,
-                rssi: RSSI.intValue,
+                rssi: smoothedRssi,
                 connectionState: existing?.connectionState ?? .disconnected,
                 lastSeen: Date(),
                 peripheral: peripheral

@@ -3,7 +3,6 @@ package com.proxichat.app.data.bluetooth
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.le.BluetoothLeScanner
 import android.bluetooth.le.ScanCallback
-import android.bluetooth.le.ScanFilter
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.os.ParcelUuid
@@ -22,12 +21,15 @@ import kotlinx.coroutines.launch
 
 /**
  * Scans for nearby BLE devices advertising our ProxiChat service UUID.
- * Maintains a list of discovered devices with RSSI signal strength.
+ *
+ * Note: Many Android devices have buggy 128-bit UUID scan filters, so we scan
+ * WITHOUT filters and check for our service UUID in the callback instead.
  */
 class BleScanner(private val bluetoothAdapter: BluetoothAdapter) {
 
     companion object {
         private const val TAG = "BleScanner"
+        private const val RSSI_SMOOTHING = 0.3 // Lower = smoother, higher = more responsive
     }
 
     private var scanner: BluetoothLeScanner? = null
@@ -41,6 +43,8 @@ class BleScanner(private val bluetoothAdapter: BluetoothAdapter) {
     private val _discoveredDevices = MutableStateFlow<Map<String, ChatDevice>>(emptyMap())
     val discoveredDevices: StateFlow<Map<String, ChatDevice>> = _discoveredDevices.asStateFlow()
 
+    private val ourServiceUuid = ParcelUuid(BluetoothConstants.SERVICE_UUID)
+
     fun startScanning() {
         if (_isScanning.value) return
 
@@ -49,12 +53,6 @@ class BleScanner(private val bluetoothAdapter: BluetoothAdapter) {
             Log.e(TAG, "BLE scanner not available")
             return
         }
-
-        val filters = listOf(
-            ScanFilter.Builder()
-                .setServiceUuid(ParcelUuid(BluetoothConstants.SERVICE_UUID))
-                .build()
-        )
 
         val settings = ScanSettings.Builder()
             .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
@@ -77,11 +75,12 @@ class BleScanner(private val bluetoothAdapter: BluetoothAdapter) {
         }
 
         try {
-            scanner?.startScan(filters, settings, scanCallback)
+            // Scan WITHOUT filters — filter in callback instead.
+            // Many Android devices fail to match 128-bit service UUIDs in hardware filters.
+            scanner?.startScan(null, settings, scanCallback)
             _isScanning.value = true
-            Log.d(TAG, "BLE scan started")
+            Log.d(TAG, "BLE scan started (no filter, checking UUID in callback)")
 
-            // Periodically remove stale devices
             scanJob = scope.launch {
                 while (isActive) {
                     delay(5_000)
@@ -110,6 +109,12 @@ class BleScanner(private val bluetoothAdapter: BluetoothAdapter) {
     }
 
     private fun processResult(result: ScanResult) {
+        // Check if this device is advertising our ProxiChat service UUID
+        val serviceUuids = result.scanRecord?.serviceUuids
+        if (serviceUuids == null || !serviceUuids.contains(ourServiceUuid)) {
+            return // Not a ProxiChat device, ignore
+        }
+
         val device = result.device ?: return
         val address = try {
             device.address
@@ -117,22 +122,29 @@ class BleScanner(private val bluetoothAdapter: BluetoothAdapter) {
             return
         }
 
-        val displayName = extractDisplayName(result)
         val deviceName = try {
-            device.name ?: "Unknown Device"
+            result.scanRecord?.deviceName ?: device.name ?: "ProxiChat User"
         } catch (e: SecurityException) {
-            "Unknown Device"
+            "ProxiChat User"
         }
 
         val current = _discoveredDevices.value[address]
+
+        // Smooth RSSI to prevent jittering
+        val smoothedRssi = if (current != null) {
+            ((1 - RSSI_SMOOTHING) * current.rssi + RSSI_SMOOTHING * result.rssi).toInt()
+        } else {
+            result.rssi
+        }
+
         val chatDevice = ChatDevice(
             address = address,
             name = deviceName,
-            displayName = displayName ?: deviceName,
-            rssi = result.rssi,
+            displayName = current?.displayName ?: deviceName,
+            rssi = smoothedRssi,
             connectionState = current?.connectionState ?: ConnectionState.DISCONNECTED,
             lastSeen = System.currentTimeMillis(),
-            avatarColorIndex = address.hashCode().and(0x7) // 0-7 color index
+            avatarColorIndex = address.hashCode().and(0x7)
         )
 
         _discoveredDevices.value = _discoveredDevices.value.toMutableMap().apply {
@@ -140,17 +152,9 @@ class BleScanner(private val bluetoothAdapter: BluetoothAdapter) {
         }
     }
 
-    private fun extractDisplayName(result: ScanResult): String? {
-        // Get name from scan response device name
-        val localName = result.scanRecord?.deviceName
-        if (!localName.isNullOrBlank()) return localName
-        return null
-    }
-
     private fun pruneStaleDevices() {
         val now = System.currentTimeMillis()
         val updated = _discoveredDevices.value.filter { (_, device) ->
-            // Keep connected devices and recently seen devices
             device.connectionState == ConnectionState.CONNECTED ||
                     (now - device.lastSeen) < BluetoothConstants.DEVICE_STALE_TIMEOUT_MS
         }
