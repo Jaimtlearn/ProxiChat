@@ -16,6 +16,7 @@ class PeripheralManager: NSObject, ObservableObject {
 
     private var subscribedCentrals: [String: CBCentral] = [:]
     private let protocol_ = MessageProtocol()
+    private var wantsToAdvertise = false
 
     let incomingMessages = PassthroughSubject<(senderID: String, data: Data), Never>()
     let connectionEvents = PassthroughSubject<(deviceID: String, connected: Bool), Never>()
@@ -40,6 +41,7 @@ class PeripheralManager: NSObject, ObservableObject {
     }
 
     func startAdvertising() {
+        wantsToAdvertise = true
         guard let pm = peripheralManager, pm.state == .poweredOn else { return }
 
         let advertisementData: [String: Any] = [
@@ -51,6 +53,7 @@ class PeripheralManager: NSObject, ObservableObject {
     }
 
     func stopAdvertising() {
+        wantsToAdvertise = false
         peripheralManager?.stopAdvertising()
         DispatchQueue.main.async { self.isAdvertising = false }
     }
@@ -126,7 +129,10 @@ extension PeripheralManager: CBPeripheralManagerDelegate {
     func peripheralManagerDidUpdateState(_ peripheral: CBPeripheralManager) {
         if peripheral.state == .poweredOn {
             setupService()
-            startAdvertising()
+            // Auto-start advertising if it was requested before Bluetooth powered on
+            if wantsToAdvertise {
+                startAdvertising()
+            }
         }
     }
 

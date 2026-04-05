@@ -12,7 +12,6 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
@@ -36,6 +35,7 @@ class DiscoveryViewModel @Inject constructor(
 ) : ViewModel() {
 
     private val _errorMessage = MutableStateFlow<String?>(null)
+    private var isInitialized = false
 
     val uiState: StateFlow<DiscoveryUiState> = combine(
         deviceRepository.discoveredDevices,
@@ -57,13 +57,24 @@ class DiscoveryViewModel @Inject constructor(
     )
 
     init {
+        // Initialize bluetooth AND THEN start discovery — no race condition
         viewModelScope.launch {
             val name = userPreferences.displayName.first()
             bluetoothController.initialize(name)
+            isInitialized = true
+            // Auto-start discovery after initialization completes
+            startDiscoveryInternal()
         }
     }
 
     fun startDiscovery() {
+        if (!isInitialized) return // Not ready yet, init will auto-start
+        viewModelScope.launch {
+            startDiscoveryInternal()
+        }
+    }
+
+    private suspend fun startDiscoveryInternal() {
         if (!bluetoothController.isBluetoothAvailable) {
             _errorMessage.value = "Bluetooth is not available on this device"
             return
@@ -73,9 +84,7 @@ class DiscoveryViewModel @Inject constructor(
             return
         }
         _errorMessage.value = null
-        viewModelScope.launch {
-            deviceRepository.startDiscovery()
-        }
+        deviceRepository.startDiscovery()
     }
 
     fun stopDiscovery() {

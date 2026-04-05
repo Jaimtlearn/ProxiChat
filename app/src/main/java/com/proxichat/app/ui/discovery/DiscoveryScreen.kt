@@ -63,9 +63,7 @@ fun DiscoveryScreen(
     val state by viewModel.uiState.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
 
-    LaunchedEffect(Unit) {
-        viewModel.startDiscovery()
-    }
+    // Discovery auto-starts in ViewModel init after initialization completes
 
     LaunchedEffect(state.errorMessage) {
         state.errorMessage?.let {

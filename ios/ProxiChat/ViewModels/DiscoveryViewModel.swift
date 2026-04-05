@@ -25,6 +25,14 @@ class DiscoveryViewModel: ObservableObject {
         bluetooth.$isScanning
             .receive(on: DispatchQueue.main)
             .assign(to: &$isScanning)
+
+        // Initialize bluetooth and auto-start discovery
+        bluetooth.initialize(displayName: settings.displayName)
+
+        // Small delay to let CBPeripheralManager/CBCentralManager power on
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+            self?.startDiscovery()
+        }
     }
 
     var connectedDevices: [ChatDevice] {

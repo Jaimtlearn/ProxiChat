@@ -18,32 +18,42 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 
 /**
  * Scans for nearby BLE devices advertising our ProxiChat service UUID.
  *
- * Note: Many Android devices have buggy 128-bit UUID scan filters, so we scan
- * WITHOUT filters and check for our service UUID in the callback instead.
+ * Scans WITHOUT hardware filters (buggy on many Android devices for 128-bit UUIDs)
+ * and checks for our UUID in the callback using multiple detection methods.
  */
 class BleScanner(private val bluetoothAdapter: BluetoothAdapter) {
 
     companion object {
         private const val TAG = "BleScanner"
-        private const val RSSI_SMOOTHING = 0.3 // Lower = smoother, higher = more responsive
+        private const val RSSI_SMOOTHING = 0.3
+
+        // Our UUID bytes in little-endian (BLE wire format) for raw byte matching
+        private val SERVICE_UUID_BYTES_LE: ByteArray by lazy {
+            val uuid = BluetoothConstants.SERVICE_UUID
+            val bb = ByteBuffer.allocate(16).order(ByteOrder.BIG_ENDIAN)
+            bb.putLong(uuid.mostSignificantBits)
+            bb.putLong(uuid.leastSignificantBits)
+            bb.array().reversedArray() // BLE transmits UUIDs in little-endian
+        }
     }
 
     private var scanner: BluetoothLeScanner? = null
     private var scanCallback: ScanCallback? = null
     private var scanJob: Job? = null
     private val scope = CoroutineScope(Dispatchers.Default)
+    private val ourServiceUuid = ParcelUuid(BluetoothConstants.SERVICE_UUID)
 
     private val _isScanning = MutableStateFlow(false)
     val isScanning: StateFlow<Boolean> = _isScanning.asStateFlow()
 
     private val _discoveredDevices = MutableStateFlow<Map<String, ChatDevice>>(emptyMap())
     val discoveredDevices: StateFlow<Map<String, ChatDevice>> = _discoveredDevices.asStateFlow()
-
-    private val ourServiceUuid = ParcelUuid(BluetoothConstants.SERVICE_UUID)
 
     fun startScanning() {
         if (_isScanning.value) return
@@ -75,11 +85,10 @@ class BleScanner(private val bluetoothAdapter: BluetoothAdapter) {
         }
 
         try {
-            // Scan WITHOUT filters — filter in callback instead.
-            // Many Android devices fail to match 128-bit service UUIDs in hardware filters.
+            // Scan WITHOUT hardware filter — check UUID in callback instead
             scanner?.startScan(null, settings, scanCallback)
             _isScanning.value = true
-            Log.d(TAG, "BLE scan started (no filter, checking UUID in callback)")
+            Log.d(TAG, "BLE scan started")
 
             scanJob = scope.launch {
                 while (isActive) {
@@ -101,7 +110,6 @@ class BleScanner(private val bluetoothAdapter: BluetoothAdapter) {
         scanCallback = null
         scanJob?.cancel()
         _isScanning.value = false
-        Log.d(TAG, "BLE scan stopped")
     }
 
     fun clearDevices() {
@@ -109,11 +117,8 @@ class BleScanner(private val bluetoothAdapter: BluetoothAdapter) {
     }
 
     private fun processResult(result: ScanResult) {
-        // Check if this device is advertising our ProxiChat service UUID
-        val serviceUuids = result.scanRecord?.serviceUuids
-        if (serviceUuids == null || !serviceUuids.contains(ourServiceUuid)) {
-            return // Not a ProxiChat device, ignore
-        }
+        // Check if this is a ProxiChat device using multiple methods
+        if (!isProxiChatDevice(result)) return
 
         val device = result.device ?: return
         val address = try {
@@ -130,7 +135,6 @@ class BleScanner(private val bluetoothAdapter: BluetoothAdapter) {
 
         val current = _discoveredDevices.value[address]
 
-        // Smooth RSSI to prevent jittering
         val smoothedRssi = if (current != null) {
             ((1 - RSSI_SMOOTHING) * current.rssi + RSSI_SMOOTHING * result.rssi).toInt()
         } else {
@@ -150,6 +154,59 @@ class BleScanner(private val bluetoothAdapter: BluetoothAdapter) {
         _discoveredDevices.value = _discoveredDevices.value.toMutableMap().apply {
             put(address, chatDevice)
         }
+    }
+
+    /**
+     * Checks if a scan result belongs to a ProxiChat device.
+     * Uses 3 methods since Android's scanRecord.serviceUuids is null on many devices.
+     */
+    private fun isProxiChatDevice(result: ScanResult): Boolean {
+        val scanRecord = result.scanRecord ?: return false
+
+        // Method 1: Parsed service UUIDs (works on most devices)
+        if (scanRecord.serviceUuids?.contains(ourServiceUuid) == true) return true
+
+        // Method 2: Service data keys (if UUID is in service data)
+        if (scanRecord.serviceData?.containsKey(ourServiceUuid) == true) return true
+
+        // Method 3: Search raw advertisement bytes for our UUID (handles buggy parsers)
+        val rawBytes = scanRecord.bytes ?: return false
+        return containsUuidInRawBytes(rawBytes)
+    }
+
+    /**
+     * Parses raw BLE advertisement bytes looking for our 128-bit service UUID.
+     * BLE AD structure: [length][type][data...] repeated.
+     * Type 0x06 = Incomplete 128-bit UUID list, 0x07 = Complete 128-bit UUID list.
+     */
+    private fun containsUuidInRawBytes(bytes: ByteArray): Boolean {
+        var i = 0
+        while (i < bytes.size) {
+            val length = bytes[i].toInt() and 0xFF
+            if (length == 0 || i + length >= bytes.size) break
+
+            val type = bytes[i + 1].toInt() and 0xFF
+
+            // 0x06 = Incomplete List of 128-bit UUIDs
+            // 0x07 = Complete List of 128-bit UUIDs
+            if (type == 0x06 || type == 0x07) {
+                var offset = i + 2
+                val end = i + 1 + length
+                while (offset + 16 <= end) {
+                    var match = true
+                    for (j in 0 until 16) {
+                        if (bytes[offset + j] != SERVICE_UUID_BYTES_LE[j]) {
+                            match = false
+                            break
+                        }
+                    }
+                    if (match) return true
+                    offset += 16
+                }
+            }
+            i += length + 1
+        }
+        return false
     }
 
     private fun pruneStaleDevices() {
