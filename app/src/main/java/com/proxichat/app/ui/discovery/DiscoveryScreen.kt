@@ -188,7 +188,7 @@ fun DiscoveryScreen(
                             DeviceCard(
                                 device = device,
                                 onClick = { onDeviceClick(device.address) },
-                                modifier = Modifier.animateItem()
+                                modifier = Modifier.animateItemPlacement()
                             )
                         }
                     }
@@ -214,7 +214,7 @@ fun DiscoveryScreen(
                                         onDeviceClick(device.address)
                                     }
                                 },
-                                modifier = Modifier.animateItem()
+                                modifier = Modifier.animateItemPlacement()
                             )
                         }
                     }

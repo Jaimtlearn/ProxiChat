@@ -1,6 +1,12 @@
 package com.proxichat.app.ui.components
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.slideInVertically
 import androidx.compose.foundation.background
@@ -216,17 +222,17 @@ fun TypingIndicator(modifier: Modifier = Modifier) {
 
 @Composable
 private fun TypingDot(delayMillis: Int) {
-    val infiniteTransition = androidx.compose.animation.core.rememberInfiniteTransition(label = "typing")
+    val infiniteTransition = rememberInfiniteTransition(label = "typing")
     val alpha = infiniteTransition.animateFloat(
         initialValue = 0.3f,
         targetValue = 1f,
-        animationSpec = androidx.compose.animation.core.infiniteRepeatable(
-            animation = androidx.compose.animation.core.tween(
+        animationSpec = infiniteRepeatable(
+            animation = tween(
                 durationMillis = 600,
                 delayMillis = delayMillis,
-                easing = androidx.compose.animation.core.LinearEasing
+                easing = LinearEasing
             ),
-            repeatMode = androidx.compose.animation.core.RepeatMode.Reverse
+            repeatMode = RepeatMode.Reverse
         ),
         label = "dot_alpha"
     )
