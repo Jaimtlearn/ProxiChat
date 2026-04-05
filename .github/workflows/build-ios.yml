@@ -3,7 +3,7 @@ name: Build iOS App
 on:
   push:
     branches: [ main ]
-  workflow_dispatch:  # Allows manual trigger from GitHub website
+  workflow_dispatch:
 
 jobs:
   build:
@@ -30,11 +30,25 @@ jobs:
           CODE_SIGNING_ALLOWED=NO \
           ONLY_ACTIVE_ARCH=NO
 
+    - name: Verify build output
+      run: |
+        echo "=== .app contents ==="
+        ls -la build/ProxiChat.app/
+        echo "=== Checking executable ==="
+        file build/ProxiChat.app/ProxiChat
+        echo "=== Info.plist ==="
+        cat build/ProxiChat.app/Info.plist | head -30
+
     - name: Create IPA
       run: |
         mkdir -p Payload
         cp -r build/ProxiChat.app Payload/
-        zip -r ProxiChat.ipa Payload
+        cd Payload && zip -r ../ProxiChat.ipa ProxiChat.app
+        cd ..
+        echo "=== IPA contents ==="
+        unzip -l ProxiChat.ipa | head -20
+        echo "=== IPA size ==="
+        ls -lh ProxiChat.ipa
 
     - name: Upload IPA
       uses: actions/upload-artifact@v4
