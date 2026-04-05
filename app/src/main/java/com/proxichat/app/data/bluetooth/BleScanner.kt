@@ -174,11 +174,7 @@ class BleScanner(private val bluetoothAdapter: BluetoothAdapter) {
         return containsUuidInRawBytes(rawBytes)
     }
 
-    /**
-     * Parses raw BLE advertisement bytes looking for our 128-bit service UUID.
-     * BLE AD structure: [length][type][data...] repeated.
-     * Type 0x06 = Incomplete 128-bit UUID list, 0x07 = Complete 128-bit UUID list.
-     */
+    // Parses raw BLE AD bytes for our 128-bit service UUID (type 0x06 or 0x07)
     private fun containsUuidInRawBytes(bytes: ByteArray): Boolean {
         var i = 0
         while (i < bytes.size) {
