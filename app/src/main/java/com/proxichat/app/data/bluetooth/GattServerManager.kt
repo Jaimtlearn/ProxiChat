@@ -222,10 +222,14 @@ class GattServerManager(
     }
 
     fun sendNotification(deviceAddress: String, data: ByteArray): Boolean {
-        val device = subscribedDevices[deviceAddress] ?: return false
-        val server = gattServer ?: return false
-        val service = server.getService(BluetoothConstants.SERVICE_UUID) ?: return false
-        val characteristic = service.getCharacteristic(BluetoothConstants.MESSAGE_NOTIFY_CHAR_UUID) ?: return false
+        val device = subscribedDevices[deviceAddress]
+        if (device == null) { Log.w(TAG, "sendNotification: device $deviceAddress not subscribed"); return false }
+        val server = gattServer
+        if (server == null) { Log.w(TAG, "sendNotification: GATT server is null"); return false }
+        val service = server.getService(BluetoothConstants.SERVICE_UUID)
+        if (service == null) { Log.w(TAG, "sendNotification: service not found"); return false }
+        val characteristic = service.getCharacteristic(BluetoothConstants.MESSAGE_NOTIFY_CHAR_UUID)
+        if (characteristic == null) { Log.w(TAG, "sendNotification: characteristic not found"); return false }
 
         val mtu = deviceMtus[deviceAddress] ?: BluetoothConstants.DEFAULT_MTU
         val chunks = protocol.chunk(data, mtu - 3) // ATT overhead

@@ -21,6 +21,7 @@ class MessageProtocol(private val gson: Gson = Gson()) {
 
     private val sequenceCounter = AtomicInteger(0)
     private val reassemblyBuffers = ConcurrentHashMap<Int, MutableList<ChunkData>>()
+    private val reassemblyTimestamps = ConcurrentHashMap<Int, Long>()
     private var encryptionKey: SecretKey? = null
 
     // --- Data classes for the wire protocol ---
@@ -170,10 +171,17 @@ class MessageProtocol(private val gson: Gson = Gson()) {
         }
 
         val buffer = reassemblyBuffers.getOrPut(chunk.sequenceNumber) { mutableListOf() }
+        reassemblyTimestamps.putIfAbsent(chunk.sequenceNumber, System.currentTimeMillis())
         buffer.add(chunk)
+
+        // Cleanup stale incomplete buffers (older than 10 seconds)
+        val now = System.currentTimeMillis()
+        reassemblyTimestamps.entries.removeAll { now - it.value > 10_000 }
+        reassemblyBuffers.keys.removeAll { !reassemblyTimestamps.containsKey(it) }
 
         if (chunk.isLast) {
             reassemblyBuffers.remove(chunk.sequenceNumber)
+            reassemblyTimestamps.remove(chunk.sequenceNumber)
             val sorted = buffer.sortedBy { it.chunkIndex }
             val totalSize = sorted.sumOf { it.data.size }
             val result = ByteArray(totalSize)
@@ -264,5 +272,6 @@ class MessageProtocol(private val gson: Gson = Gson()) {
 
     fun clearReassemblyBuffers() {
         reassemblyBuffers.clear()
+        reassemblyTimestamps.clear()
     }
 }

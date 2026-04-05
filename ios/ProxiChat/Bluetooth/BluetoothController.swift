@@ -2,8 +2,6 @@ import Foundation
 import Combine
 
 /// Central coordinator for all Bluetooth operations on iOS.
-/// Mirrors the Android BluetoothController — manages peripheral manager (server/advertiser)
-/// and central manager (scanner/client) in tandem.
 class BluetoothController: ObservableObject {
 
     @Published var isScanning = false
@@ -19,9 +17,18 @@ class BluetoothController: ObservableObject {
 
     private var cancellables = Set<AnyCancellable>()
     private var displayName = "User"
+    private var isInitialized = false
 
     func initialize(displayName: String) {
+        // Idempotent — only initialize once
+        if isInitialized {
+            self.displayName = displayName
+            peripheralManager.updateDisplayName(displayName)
+            return
+        }
+        isInitialized = true
         self.displayName = displayName
+
         peripheralManager.start(displayName: displayName)
         centralManager.start()
 
@@ -118,16 +125,15 @@ class BluetoothController: ObservableObject {
         centralManager.stop()
         cancellables.removeAll()
         protocol_.clearBuffers()
+        isInitialized = false
     }
 
     // MARK: - Private
 
     private func sendData(to deviceID: String, data: Data) -> Bool {
-        // Try client path first (we connected to them)
         if centralManager.isConnected(deviceID) {
             return centralManager.sendMessage(to: deviceID, data: data)
         }
-        // Try server path (they connected to us)
         if peripheralManager.isSubscribed(deviceID) {
             return peripheralManager.sendNotification(to: deviceID, data: data)
         }
@@ -147,9 +153,7 @@ class BluetoothController: ObservableObject {
 
         case "TYPING":
             let isTyping = message.p["isTyping"]?.boolValue ?? false
-            DispatchQueue.main.async {
-                self.typingStates[senderID] = isTyping
-            }
+            DispatchQueue.main.async { self.typingStates[senderID] = isTyping }
 
         case "PROFILE":
             if let name = message.p["displayName"]?.stringValue {

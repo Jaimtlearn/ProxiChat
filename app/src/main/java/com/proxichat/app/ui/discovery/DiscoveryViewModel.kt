@@ -35,7 +35,6 @@ class DiscoveryViewModel @Inject constructor(
 ) : ViewModel() {
 
     private val _errorMessage = MutableStateFlow<String?>(null)
-    private var isInitialized = false
 
     val uiState: StateFlow<DiscoveryUiState> = combine(
         deviceRepository.discoveredDevices,
@@ -57,24 +56,19 @@ class DiscoveryViewModel @Inject constructor(
     )
 
     init {
-        // Initialize bluetooth AND THEN start discovery — no race condition
+        // Sequential: initialize FIRST, then start discovery. No race condition.
         viewModelScope.launch {
             val name = userPreferences.displayName.first()
             bluetoothController.initialize(name)
-            isInitialized = true
-            // Auto-start discovery after initialization completes
-            startDiscoveryInternal()
+            doStartDiscovery()
         }
     }
 
     fun startDiscovery() {
-        if (!isInitialized) return // Not ready yet, init will auto-start
-        viewModelScope.launch {
-            startDiscoveryInternal()
-        }
+        viewModelScope.launch { doStartDiscovery() }
     }
 
-    private suspend fun startDiscoveryInternal() {
+    private suspend fun doStartDiscovery() {
         if (!bluetoothController.isBluetoothAvailable) {
             _errorMessage.value = "Bluetooth is not available on this device"
             return
@@ -88,9 +82,7 @@ class DiscoveryViewModel @Inject constructor(
     }
 
     fun stopDiscovery() {
-        viewModelScope.launch {
-            deviceRepository.stopDiscovery()
-        }
+        viewModelScope.launch { deviceRepository.stopDiscovery() }
     }
 
     fun connectToDevice(address: String) {
@@ -98,15 +90,13 @@ class DiscoveryViewModel @Inject constructor(
             try {
                 deviceRepository.connectToDevice(address)
             } catch (e: Exception) {
-                _errorMessage.value = "Failed to connect: ${e.message}"
+                _errorMessage.value = "Connection failed: ${e.message}"
             }
         }
     }
 
     fun disconnectFromDevice(address: String) {
-        viewModelScope.launch {
-            deviceRepository.disconnectFromDevice(address)
-        }
+        viewModelScope.launch { deviceRepository.disconnectFromDevice(address) }
     }
 
     fun clearError() {
@@ -115,8 +105,6 @@ class DiscoveryViewModel @Inject constructor(
 
     override fun onCleared() {
         super.onCleared()
-        viewModelScope.launch {
-            deviceRepository.stopDiscovery()
-        }
+        viewModelScope.launch { deviceRepository.stopDiscovery() }
     }
 }

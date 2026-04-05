@@ -13,11 +13,6 @@ struct ContentView: View {
             )
         } else {
             OnboardingView(viewModel: OnboardingViewModel(settings: settings))
-                .onChange(of: settings.isOnboardingComplete) { isComplete in
-                    if isComplete {
-                        bluetooth.initialize(displayName: settings.displayName)
-                    }
-                }
         }
     }
 }

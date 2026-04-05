@@ -11,13 +11,6 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
-/**
- * Manages BLE advertising so other devices can discover us.
- *
- * BLE advertisement packets are limited to 31 bytes. A 128-bit service UUID
- * alone takes 18 bytes, so we keep the main packet minimal (just the UUID)
- * and put the device name in the scan response packet.
- */
 class BleAdvertiser(private val bluetoothAdapter: BluetoothAdapter) {
 
     companion object {
@@ -31,14 +24,11 @@ class BleAdvertiser(private val bluetoothAdapter: BluetoothAdapter) {
     val isAdvertising: StateFlow<Boolean> = _isAdvertising.asStateFlow()
 
     fun startAdvertising(displayName: String) {
-        if (_isAdvertising.value) {
-            Log.d(TAG, "Already advertising")
-            return
-        }
+        if (_isAdvertising.value) return
 
         advertiser = bluetoothAdapter.bluetoothLeAdvertiser
         if (advertiser == null) {
-            Log.e(TAG, "BLE advertising not supported on this device")
+            Log.e(TAG, "BLE advertiser not available — is Bluetooth enabled?")
             return
         }
 
@@ -49,14 +39,14 @@ class BleAdvertiser(private val bluetoothAdapter: BluetoothAdapter) {
             .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_MEDIUM)
             .build()
 
-        // Main advertisement: ONLY the service UUID (18 bytes, fits in 31-byte limit)
+        // Main packet: service UUID only (18 bytes, fits in 31-byte limit)
         val data = AdvertiseData.Builder()
             .setIncludeDeviceName(false)
             .setIncludeTxPowerLevel(false)
             .addServiceUuid(ParcelUuid(BluetoothConstants.SERVICE_UUID))
             .build()
 
-        // Scan response: device name (sent when scanner requests more info)
+        // Scan response: device name + TX power (sent when scanner requests details)
         val scanResponse = AdvertiseData.Builder()
             .setIncludeDeviceName(true)
             .setIncludeTxPowerLevel(true)
@@ -64,20 +54,29 @@ class BleAdvertiser(private val bluetoothAdapter: BluetoothAdapter) {
 
         callback = object : AdvertiseCallback() {
             override fun onStartSuccess(settingsInEffect: AdvertiseSettings?) {
-                Log.d(TAG, "Advertising started successfully")
+                Log.d(TAG, "Advertising STARTED successfully")
                 _isAdvertising.value = true
             }
 
             override fun onStartFailure(errorCode: Int) {
-                Log.e(TAG, "Advertising failed with error code: $errorCode")
+                val reason = when (errorCode) {
+                    ADVERTISE_FAILED_DATA_TOO_LARGE -> "data too large"
+                    ADVERTISE_FAILED_TOO_MANY_ADVERTISERS -> "too many advertisers"
+                    ADVERTISE_FAILED_ALREADY_STARTED -> "already started"
+                    ADVERTISE_FAILED_INTERNAL_ERROR -> "internal error"
+                    ADVERTISE_FAILED_FEATURE_UNSUPPORTED -> "not supported"
+                    else -> "unknown ($errorCode)"
+                }
+                Log.e(TAG, "Advertising FAILED: $reason")
                 _isAdvertising.value = false
             }
         }
 
         try {
             advertiser?.startAdvertising(settings, data, scanResponse, callback)
+            // Don't set _isAdvertising here — wait for callback
         } catch (e: SecurityException) {
-            Log.e(TAG, "Missing Bluetooth advertise permission", e)
+            Log.e(TAG, "Missing BLUETOOTH_ADVERTISE permission", e)
         }
     }
 
@@ -85,11 +84,12 @@ class BleAdvertiser(private val bluetoothAdapter: BluetoothAdapter) {
         try {
             callback?.let { advertiser?.stopAdvertising(it) }
         } catch (e: SecurityException) {
-            Log.e(TAG, "Missing Bluetooth advertise permission", e)
+            Log.e(TAG, "Missing permission to stop advertising", e)
+        } catch (e: IllegalStateException) {
+            Log.e(TAG, "Advertiser in bad state", e)
         }
         callback = null
         _isAdvertising.value = false
-        Log.d(TAG, "Advertising stopped")
     }
 
     fun updateDisplayName(displayName: String) {

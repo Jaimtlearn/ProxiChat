@@ -2,7 +2,7 @@ import Foundation
 import CoreBluetooth
 import Combine
 
-/// Manages the CBCentralManager side: BLE scanning and GATT client connections.
+/// BLE Scanner + GATT Client.
 /// Equivalent to Android's BleScanner + GattClientManager.
 class CentralManager: NSObject, ObservableObject {
 
@@ -14,7 +14,6 @@ class CentralManager: NSObject, ObservableObject {
 
     private var centralManager: CBCentralManager?
     private var connectedPeripherals: [String: CBPeripheral] = [:]
-    private var peripheralMTUs: [String: Int] = [:]
     private let protocol_ = MessageProtocol()
     private var pruneTimer: Timer?
     private var wantsToScan = false
@@ -35,13 +34,7 @@ class CentralManager: NSObject, ObservableObject {
 
     func startScanning() {
         wantsToScan = true
-        guard let cm = centralManager, cm.state == .poweredOn else { return }
-        cm.scanForPeripherals(
-            withServices: [BluetoothConstants.serviceUUID],
-            options: [CBCentralManagerScanOptionAllowDuplicatesKey: true]
-        )
-        DispatchQueue.main.async { self.isScanning = true }
-        startPruneTimer()
+        doScanIfReady()
     }
 
     func stopScanning() {
@@ -54,17 +47,20 @@ class CentralManager: NSObject, ObservableObject {
 
     func connect(to deviceID: String) {
         guard let device = discoveredDevices[deviceID],
-              let peripheral = device.peripheral else { return }
-
+              let peripheral = device.peripheral else {
+            print("[CentralManager] Cannot connect: device not found")
+            return
+        }
         updateConnectionState(deviceID, .connecting)
-        centralManager?.connect(peripheral, options: nil)
+        centralManager?.connect(peripheral, options: [
+            CBConnectPeripheralOptionNotifyOnDisconnectionKey: true
+        ])
     }
 
     func disconnect(from deviceID: String) {
         if let peripheral = connectedPeripherals.removeValue(forKey: deviceID) {
             centralManager?.cancelPeripheralConnection(peripheral)
         }
-        peripheralMTUs.removeValue(forKey: deviceID)
         updateConnectionState(deviceID, .disconnected)
     }
 
@@ -74,17 +70,16 @@ class CentralManager: NSObject, ObservableObject {
             updateConnectionState(id, .disconnected)
         }
         connectedPeripherals.removeAll()
-        peripheralMTUs.removeAll()
     }
 
     func sendMessage(to deviceID: String, data: Data) -> Bool {
-        guard let peripheral = connectedPeripherals[deviceID] else { return false }
-        guard let service = peripheral.services?.first(where: { $0.uuid == BluetoothConstants.serviceUUID }),
+        guard let peripheral = connectedPeripherals[deviceID],
+              let service = peripheral.services?.first(where: { $0.uuid == BluetoothConstants.serviceUUID }),
               let writeChar = service.characteristics?.first(where: { $0.uuid == BluetoothConstants.messageWriteCharUUID })
         else { return false }
 
         let mtu = peripheral.maximumWriteValueLength(for: .withResponse)
-        let chunks = protocol_.chunk(data: data, mtu: mtu)
+        let chunks = protocol_.chunk(data: data, mtu: max(mtu, 20))
 
         for chunk in chunks {
             peripheral.writeValue(chunk, for: writeChar, type: .withResponse)
@@ -101,6 +96,20 @@ class CentralManager: NSObject, ObservableObject {
     }
 
     // MARK: - Private
+
+    private func doScanIfReady() {
+        guard wantsToScan,
+              let cm = centralManager,
+              cm.state == .poweredOn else { return }
+
+        cm.scanForPeripherals(
+            withServices: [BluetoothConstants.serviceUUID],
+            options: [CBCentralManagerScanOptionAllowDuplicatesKey: true]
+        )
+        DispatchQueue.main.async { self.isScanning = true }
+        print("[CentralManager] Scan STARTED with UUID filter")
+        startPruneTimer()
+    }
 
     private func updateConnectionState(_ deviceID: String, _ state: ConnectionState) {
         DispatchQueue.main.async {
@@ -134,10 +143,11 @@ class CentralManager: NSObject, ObservableObject {
 extension CentralManager: CBCentralManagerDelegate {
 
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
+        print("[CentralManager] State: \(central.state.rawValue)")
         if central.state == .poweredOn {
-            // Auto-start scanning when Bluetooth becomes available
+            // If scanning was requested before BT powered on, start now
             if wantsToScan {
-                startScanning()
+                doScanIfReady()
             }
         }
     }
@@ -146,24 +156,24 @@ extension CentralManager: CBCentralManagerDelegate {
                         advertisementData: [String: Any], rssi RSSI: NSNumber) {
         let id = peripheral.identifier.uuidString
         let localName = advertisementData[CBAdvertisementDataLocalNameKey] as? String
-        let deviceName = peripheral.name ?? "Unknown Device"
+        let deviceName = peripheral.name ?? "ProxiChat User"
 
         DispatchQueue.main.async {
             let existing = self.discoveredDevices[id]
 
-            // Smooth RSSI to prevent jittering (30% new, 70% old)
-            let smoothedRssi: Int
-            if let existingRssi = existing?.rssi {
-                smoothedRssi = Int(Double(existingRssi) * 0.7 + Double(RSSI.intValue) * 0.3)
+            // RSSI smoothing: 70% new + 30% old
+            let rssi: Int
+            if let old = existing?.rssi {
+                rssi = Int(0.7 * Double(RSSI.intValue) + 0.3 * Double(old))
             } else {
-                smoothedRssi = RSSI.intValue
+                rssi = RSSI.intValue
             }
 
             let device = ChatDevice(
                 id: id,
                 name: deviceName,
                 displayName: localName ?? existing?.displayName ?? deviceName,
-                rssi: smoothedRssi,
+                rssi: rssi,
                 connectionState: existing?.connectionState ?? .disconnected,
                 lastSeen: Date(),
                 peripheral: peripheral
@@ -177,18 +187,41 @@ extension CentralManager: CBCentralManagerDelegate {
         connectedPeripherals[id] = peripheral
         peripheral.delegate = self
         peripheral.discoverServices([BluetoothConstants.serviceUUID])
-        updateConnectionState(id, .connecting) // Still discovering services
+        updateConnectionState(id, .connecting)
+        print("[CentralManager] Connected to \(id), discovering services...")
     }
 
     func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
-        updateConnectionState(peripheral.identifier.uuidString, .failed)
+        let id = peripheral.identifier.uuidString
+        print("[CentralManager] Failed to connect \(id): \(error?.localizedDescription ?? "unknown")")
+        updateConnectionState(id, .failed)
+
+        // Auto-retry once after 2 seconds
+        DispatchQueue.global().asyncAfter(deadline: .now() + 2.0) { [weak self] in
+            if self?.connectedPeripherals[id] == nil {
+                print("[CentralManager] Retrying connection to \(id)")
+                central.connect(peripheral, options: nil)
+            }
+        }
     }
 
     func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
         let id = peripheral.identifier.uuidString
         connectedPeripherals.removeValue(forKey: id)
-        peripheralMTUs.removeValue(forKey: id)
         updateConnectionState(id, .disconnected)
+        print("[CentralManager] Disconnected from \(id)")
+
+        // Auto-reconnect once
+        if error != nil {
+            DispatchQueue.global().asyncAfter(deadline: .now() + 2.0) { [weak self] in
+                if self?.connectedPeripherals[id] == nil,
+                   let device = self?.discoveredDevices[id],
+                   let p = device.peripheral {
+                    print("[CentralManager] Auto-reconnecting to \(id)")
+                    central.connect(p, options: nil)
+                }
+            }
+        }
     }
 }
 
@@ -198,6 +231,7 @@ extension CentralManager: CBPeripheralDelegate {
 
     func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
         guard let service = peripheral.services?.first(where: { $0.uuid == BluetoothConstants.serviceUUID }) else {
+            print("[CentralManager] ProxiChat service NOT found on \(peripheral.identifier)")
             updateConnectionState(peripheral.identifier.uuidString, .failed)
             return
         }
@@ -212,14 +246,15 @@ extension CentralManager: CBPeripheralDelegate {
         guard let characteristics = service.characteristics else { return }
         let id = peripheral.identifier.uuidString
 
-        for characteristic in characteristics {
-            if characteristic.uuid == BluetoothConstants.messageNotifyCharUUID {
-                peripheral.setNotifyValue(true, for: characteristic)
+        for char in characteristics {
+            if char.uuid == BluetoothConstants.messageNotifyCharUUID {
+                peripheral.setNotifyValue(true, for: char)
+                print("[CentralManager] Subscribed to notifications on \(id)")
             }
         }
 
-        // Connection is fully set up
         updateConnectionState(id, .connected)
+        print("[CentralManager] Fully connected to \(id)")
     }
 
     func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
@@ -233,6 +268,8 @@ extension CentralManager: CBPeripheralDelegate {
     }
 
     func peripheral(_ peripheral: CBPeripheral, didWriteValueFor characteristic: CBCharacteristic, error: Error?) {
-        // Write confirmed
+        if let error = error {
+            print("[CentralManager] Write failed: \(error)")
+        }
     }
 }

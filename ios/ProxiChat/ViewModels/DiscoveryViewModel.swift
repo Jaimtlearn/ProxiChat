@@ -16,9 +16,7 @@ class DiscoveryViewModel: ObservableObject {
         self.settings = settings
 
         bluetooth.$discoveredDevices
-            .map { devices in
-                devices.values.sorted { $0.rssi > $1.rssi }
-            }
+            .map { $0.values.sorted { $0.rssi > $1.rssi } }
             .receive(on: DispatchQueue.main)
             .assign(to: &$devices)
 
@@ -26,13 +24,11 @@ class DiscoveryViewModel: ObservableObject {
             .receive(on: DispatchQueue.main)
             .assign(to: &$isScanning)
 
-        // Initialize bluetooth and auto-start discovery
+        // Initialize and start discovery immediately.
+        // The underlying managers use wantsToScan/wantsToAdvertise flags,
+        // so calling startDiscovery() before BT powers on is safe — they queue it.
         bluetooth.initialize(displayName: settings.displayName)
-
-        // Small delay to let CBPeripheralManager/CBCentralManager power on
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
-            self?.startDiscovery()
-        }
+        bluetooth.startDiscovery()
     }
 
     var connectedDevices: [ChatDevice] {

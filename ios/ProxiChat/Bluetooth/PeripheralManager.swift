@@ -2,7 +2,7 @@ import Foundation
 import CoreBluetooth
 import Combine
 
-/// Manages the CBPeripheralManager side: BLE advertising and GATT server.
+/// GATT Server + BLE Advertiser.
 /// Equivalent to Android's BleAdvertiser + GattServerManager.
 class PeripheralManager: NSObject, ObservableObject {
 
@@ -17,6 +17,7 @@ class PeripheralManager: NSObject, ObservableObject {
     private var subscribedCentrals: [String: CBCentral] = [:]
     private let protocol_ = MessageProtocol()
     private var wantsToAdvertise = false
+    private var serviceAdded = false
 
     let incomingMessages = PassthroughSubject<(senderID: String, data: Data), Never>()
     let connectionEvents = PassthroughSubject<(deviceID: String, connected: Bool), Never>()
@@ -37,19 +38,14 @@ class PeripheralManager: NSObject, ObservableObject {
         peripheralManager?.removeAllServices()
         peripheralManager = nil
         subscribedCentrals.removeAll()
-        isAdvertising = false
+        serviceAdded = false
+        wantsToAdvertise = false
+        DispatchQueue.main.async { self.isAdvertising = false }
     }
 
     func startAdvertising() {
         wantsToAdvertise = true
-        guard let pm = peripheralManager, pm.state == .poweredOn else { return }
-
-        let advertisementData: [String: Any] = [
-            CBAdvertisementDataServiceUUIDsKey: [BluetoothConstants.serviceUUID],
-            CBAdvertisementDataLocalNameKey: displayName
-        ]
-
-        pm.startAdvertising(advertisementData)
+        doAdvertiseIfReady()
     }
 
     func stopAdvertising() {
@@ -76,10 +72,7 @@ class PeripheralManager: NSObject, ObservableObject {
 
         for chunk in chunks {
             let sent = peripheralManager?.updateValue(chunk, for: characteristic, onSubscribedCentrals: [central])
-            if sent == false {
-                // Queue is full — CoreBluetooth will call peripheralManagerIsReady(toUpdateSubscribers:)
-                return false
-            }
+            if sent == false { return false }
         }
         return true
     }
@@ -90,8 +83,22 @@ class PeripheralManager: NSObject, ObservableObject {
 
     // MARK: - Private
 
+    private func doAdvertiseIfReady() {
+        guard wantsToAdvertise,
+              serviceAdded,
+              let pm = peripheralManager,
+              pm.state == .poweredOn else { return }
+
+        let data: [String: Any] = [
+            CBAdvertisementDataServiceUUIDsKey: [BluetoothConstants.serviceUUID],
+            CBAdvertisementDataLocalNameKey: displayName
+        ]
+        pm.startAdvertising(data)
+    }
+
     private func setupService() {
-        // Message write characteristic (centrals write to us)
+        guard let pm = peripheralManager else { return }
+
         writeCharacteristic = CBMutableCharacteristic(
             type: BluetoothConstants.messageWriteCharUUID,
             properties: [.write, .writeWithoutResponse],
@@ -99,7 +106,6 @@ class PeripheralManager: NSObject, ObservableObject {
             permissions: .writeable
         )
 
-        // Message notify characteristic (we notify subscribed centrals)
         notifyCharacteristic = CBMutableCharacteristic(
             type: BluetoothConstants.messageNotifyCharUUID,
             properties: [.notify, .read],
@@ -107,7 +113,6 @@ class PeripheralManager: NSObject, ObservableObject {
             permissions: .readable
         )
 
-        // Profile characteristic (readable user info)
         profileCharacteristic = CBMutableCharacteristic(
             type: BluetoothConstants.profileCharUUID,
             properties: .read,
@@ -117,8 +122,7 @@ class PeripheralManager: NSObject, ObservableObject {
 
         service = CBMutableService(type: BluetoothConstants.serviceUUID, primary: true)
         service?.characteristics = [writeCharacteristic!, notifyCharacteristic!, profileCharacteristic!]
-
-        peripheralManager?.add(service!)
+        pm.add(service!)
     }
 }
 
@@ -127,19 +131,29 @@ class PeripheralManager: NSObject, ObservableObject {
 extension PeripheralManager: CBPeripheralManagerDelegate {
 
     func peripheralManagerDidUpdateState(_ peripheral: CBPeripheralManager) {
+        print("[PeripheralManager] State: \(peripheral.state.rawValue)")
         if peripheral.state == .poweredOn {
             setupService()
-            // Auto-start advertising if it was requested before Bluetooth powered on
-            if wantsToAdvertise {
-                startAdvertising()
-            }
         }
     }
 
-    func peripheralManagerDidStartAdvertising(_ peripheral: CBPeripheralManager, error: Error?) {
-        DispatchQueue.main.async {
-            self.isAdvertising = error == nil
+    func peripheralManager(_ peripheral: CBPeripheralManager, didAdd service: CBService, error: Error?) {
+        if let error = error {
+            print("[PeripheralManager] Failed to add service: \(error)")
+            return
         }
+        print("[PeripheralManager] Service added OK")
+        serviceAdded = true
+        doAdvertiseIfReady()
+    }
+
+    func peripheralManagerDidStartAdvertising(_ peripheral: CBPeripheralManager, error: Error?) {
+        if let error = error {
+            print("[PeripheralManager] Advertising FAILED: \(error)")
+        } else {
+            print("[PeripheralManager] Advertising STARTED")
+        }
+        DispatchQueue.main.async { self.isAdvertising = error == nil }
     }
 
     func peripheralManager(_ peripheral: CBPeripheralManager, didReceiveWrite requests: [CBATTRequest]) {
@@ -169,6 +183,7 @@ extension PeripheralManager: CBPeripheralManagerDelegate {
         let id = central.identifier.uuidString
         subscribedCentrals[id] = central
         connectionEvents.send((deviceID: id, connected: true))
+        print("[PeripheralManager] Central \(id) subscribed")
     }
 
     func peripheralManager(_ peripheral: CBPeripheralManager, central: CBCentral,
@@ -179,6 +194,6 @@ extension PeripheralManager: CBPeripheralManagerDelegate {
     }
 
     func peripheralManagerIsReady(toUpdateSubscribers peripheral: CBPeripheralManager) {
-        // Transmit queue has space again — could retry pending notifications here
+        // Transmit queue has space — could retry pending notifications
     }
 }

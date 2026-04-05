@@ -12,11 +12,6 @@ struct ProxiChatApp: App {
                 .environmentObject(bluetooth)
                 .environmentObject(settings)
                 .preferredColorScheme(settings.colorScheme)
-                .onAppear {
-                    if settings.isOnboardingComplete {
-                        bluetooth.initialize(displayName: settings.displayName)
-                    }
-                }
         }
     }
 }
