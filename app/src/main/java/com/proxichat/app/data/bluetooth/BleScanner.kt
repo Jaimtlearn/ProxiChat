@@ -19,7 +19,6 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import java.nio.ByteBuffer
 
 /**
  * Scans for nearby BLE devices advertising our ProxiChat service UUID.
@@ -142,18 +141,10 @@ class BleScanner(private val bluetoothAdapter: BluetoothAdapter) {
     }
 
     private fun extractDisplayName(result: ScanResult): String? {
-        val serviceData = result.scanRecord?.getServiceData(ParcelUuid(BluetoothConstants.SERVICE_UUID))
-            ?: return null
-
-        if (serviceData.size < 2) return null
-
-        val buffer = ByteBuffer.wrap(serviceData)
-        val version = buffer.get()
-        if (version != BluetoothConstants.PROTOCOL_VERSION) return null
-
-        val nameBytes = ByteArray(serviceData.size - 1)
-        buffer.get(nameBytes)
-        return String(nameBytes, Charsets.UTF_8).trim()
+        // Get name from scan response device name
+        val localName = result.scanRecord?.deviceName
+        if (!localName.isNullOrBlank()) return localName
+        return null
     }
 
     private fun pruneStaleDevices() {

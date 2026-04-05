@@ -17,6 +17,7 @@ class CentralManager: NSObject, ObservableObject {
     private var peripheralMTUs: [String: Int] = [:]
     private let protocol_ = MessageProtocol()
     private var pruneTimer: Timer?
+    private var wantsToScan = false
 
     override init() {
         super.init()
@@ -33,6 +34,7 @@ class CentralManager: NSObject, ObservableObject {
     }
 
     func startScanning() {
+        wantsToScan = true
         guard let cm = centralManager, cm.state == .poweredOn else { return }
         cm.scanForPeripherals(
             withServices: [BluetoothConstants.serviceUUID],
@@ -43,6 +45,7 @@ class CentralManager: NSObject, ObservableObject {
     }
 
     func stopScanning() {
+        wantsToScan = false
         centralManager?.stopScan()
         DispatchQueue.main.async { self.isScanning = false }
         pruneTimer?.invalidate()
@@ -131,8 +134,11 @@ class CentralManager: NSObject, ObservableObject {
 extension CentralManager: CBCentralManagerDelegate {
 
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
-        if central.state == .poweredOn && isScanning {
-            startScanning()
+        if central.state == .poweredOn {
+            // Auto-start scanning when Bluetooth becomes available
+            if wantsToScan {
+                startScanning()
+            }
         }
     }
 

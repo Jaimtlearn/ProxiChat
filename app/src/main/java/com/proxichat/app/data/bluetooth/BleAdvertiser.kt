@@ -10,11 +10,13 @@ import android.util.Log
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import java.nio.ByteBuffer
 
 /**
  * Manages BLE advertising so other devices can discover us.
- * Advertises our custom service UUID along with encoded username in manufacturer data.
+ *
+ * BLE advertisement packets are limited to 31 bytes. A 128-bit service UUID
+ * alone takes 18 bytes, so we keep the main packet minimal (just the UUID)
+ * and put the device name in the scan response packet.
  */
 class BleAdvertiser(private val bluetoothAdapter: BluetoothAdapter) {
 
@@ -43,19 +45,18 @@ class BleAdvertiser(private val bluetoothAdapter: BluetoothAdapter) {
         val settings = AdvertiseSettings.Builder()
             .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY)
             .setConnectable(true)
-            .setTimeout(0) // Advertise indefinitely
+            .setTimeout(0)
             .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_MEDIUM)
             .build()
 
-        val serviceData = encodeDisplayName(displayName)
-
+        // Main advertisement: ONLY the service UUID (18 bytes, fits in 31-byte limit)
         val data = AdvertiseData.Builder()
-            .setIncludeDeviceName(false) // We use custom service data for the name
+            .setIncludeDeviceName(false)
             .setIncludeTxPowerLevel(false)
             .addServiceUuid(ParcelUuid(BluetoothConstants.SERVICE_UUID))
-            .addServiceData(ParcelUuid(BluetoothConstants.SERVICE_UUID), serviceData)
             .build()
 
+        // Scan response: device name (sent when scanner requests more info)
         val scanResponse = AdvertiseData.Builder()
             .setIncludeDeviceName(true)
             .setIncludeTxPowerLevel(true)
@@ -96,14 +97,5 @@ class BleAdvertiser(private val bluetoothAdapter: BluetoothAdapter) {
             stopAdvertising()
             startAdvertising(displayName)
         }
-    }
-
-    private fun encodeDisplayName(name: String): ByteArray {
-        val nameBytes = name.toByteArray(Charsets.UTF_8)
-        val truncated = if (nameBytes.size > 20) nameBytes.copyOf(20) else nameBytes
-        return ByteBuffer.allocate(1 + truncated.size)
-            .put(BluetoothConstants.PROTOCOL_VERSION)
-            .put(truncated)
-            .array()
     }
 }

@@ -10,17 +10,27 @@ struct DiscoveryView: View {
 
     var body: some View {
         NavigationStack {
-            ZStack {
-                if viewModel.devices.isEmpty {
-                    EmptyStateView(
-                        icon: "antenna.radiowaves.left.and.right",
-                        title: "No Devices Found",
-                        subtitle: "Make sure Bluetooth is enabled on nearby devices running ProxiChat.",
-                        animate: viewModel.isScanning
-                    )
-                } else {
-                    deviceList
+            ZStack(alignment: .bottomTrailing) {
+                // Main content - fills entire screen
+                Group {
+                    if viewModel.devices.isEmpty {
+                        EmptyStateView(
+                            icon: "antenna.radiowaves.left.and.right",
+                            title: "No Devices Found",
+                            subtitle: "Make sure Bluetooth is enabled on nearby devices running ProxiChat.",
+                            animate: viewModel.isScanning
+                        )
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else {
+                        deviceList
+                    }
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                // Floating scan button - always bottom right
+                scanButton
+                    .padding(.trailing, 20)
+                    .padding(.bottom, 20)
             }
             .navigationTitle("ProxiChat")
             .toolbar {
@@ -41,11 +51,6 @@ struct DiscoveryView: View {
                         }
                     }
                 }
-            }
-            .overlay(alignment: .bottomTrailing) {
-                scanButton
-                    .padding(.trailing, 20)
-                    .padding(.bottom, 32)
             }
             .onAppear {
                 viewModel.startDiscovery()
