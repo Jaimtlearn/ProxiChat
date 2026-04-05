@@ -1,0 +1,52 @@
+package com.proxichat.app.di
+
+import android.content.Context
+import androidx.room.Room
+import com.proxichat.app.data.db.AppDatabase
+import com.proxichat.app.data.db.dao.ContactDao
+import com.proxichat.app.data.db.dao.MessageDao
+import com.proxichat.app.data.repository.ChatRepositoryImpl
+import com.proxichat.app.data.repository.DeviceRepositoryImpl
+import com.proxichat.app.domain.repository.ChatRepository
+import com.proxichat.app.domain.repository.DeviceRepository
+import dagger.Binds
+import dagger.Module
+import dagger.Provides
+import dagger.hilt.InstallIn
+import dagger.hilt.android.qualifiers.ApplicationContext
+import dagger.hilt.components.SingletonComponent
+import javax.inject.Singleton
+
+@Module
+@InstallIn(SingletonComponent::class)
+object DatabaseModule {
+
+    @Provides
+    @Singleton
+    fun provideDatabase(@ApplicationContext context: Context): AppDatabase {
+        return Room.databaseBuilder(
+            context,
+            AppDatabase::class.java,
+            "proxichat.db"
+        ).build()
+    }
+
+    @Provides
+    fun provideMessageDao(database: AppDatabase): MessageDao = database.messageDao()
+
+    @Provides
+    fun provideContactDao(database: AppDatabase): ContactDao = database.contactDao()
+}
+
+@Module
+@InstallIn(SingletonComponent::class)
+abstract class RepositoryModule {
+
+    @Binds
+    @Singleton
+    abstract fun bindChatRepository(impl: ChatRepositoryImpl): ChatRepository
+
+    @Binds
+    @Singleton
+    abstract fun bindDeviceRepository(impl: DeviceRepositoryImpl): DeviceRepository
+}

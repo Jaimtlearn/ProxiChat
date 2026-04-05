@@ -81,7 +81,7 @@ class BluetoothController: ObservableObject {
     }
 
     func sendTextMessage(to deviceID: String, text: String, messageId: String) -> Bool {
-        var msg = protocol_.createTextMessage(text: text, sender: "local")
+        let msg = protocol_.createTextMessage(text: text, sender: "local")
         let modifiedMsg = MessageProtocol.ProtocolMessage(
             type: msg.t, id: messageId, sender: msg.s,
             timestamp: msg.ts, payload: msg.p, encrypted: msg.e

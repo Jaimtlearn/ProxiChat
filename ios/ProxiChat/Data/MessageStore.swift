@@ -6,13 +6,15 @@ actor MessageStore {
     private let fileManager = FileManager.default
     private var cache: [String: [ChatMessage]] = [:]
 
-    private var baseDirectory: URL {
-        fileManager.urls(for: .documentDirectory, in: .userDomainMask)[0]
+    private nonisolated var baseDirectory: URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("messages", isDirectory: true)
     }
 
     init() {
-        try? fileManager.createDirectory(at: baseDirectory, withIntermediateDirectories: true)
+        let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("messages", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
     }
 
     func messages(for deviceID: String) -> [ChatMessage] {

@@ -125,8 +125,8 @@ struct ChatView: View {
     private func groupByDate(_ messages: [ChatMessage]) -> [String: [ChatMessage]] {
         let cal = Calendar.current
         return Dictionary(grouping: messages) { msg in
-            let comps = cal.dateComponents([.year, .dayOfYear], from: msg.timestamp)
-            return "\(comps.year ?? 0)-\(comps.dayOfYear ?? 0)"
+            let comps = cal.dateComponents([.year, .month, .day], from: msg.timestamp)
+            return "\(comps.year ?? 0)-\(comps.month ?? 0)-\(comps.day ?? 0)"
         }
     }
 }

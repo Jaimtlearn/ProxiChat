@@ -2,7 +2,7 @@ import Foundation
 
 class SettingsViewModel: ObservableObject {
 
-    let settings: UserSettings
+    var settings: UserSettings
     private let bluetooth: BluetoothController
     private let messageStore: MessageStore
 
