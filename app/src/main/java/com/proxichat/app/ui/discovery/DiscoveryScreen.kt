@@ -27,6 +27,7 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.CenterAlignedTopAppBar
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FabPosition
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -107,6 +108,7 @@ fun DiscoveryScreen(
                     if (state.isScanning) viewModel.stopDiscovery()
                     else viewModel.startDiscovery()
                 },
+                modifier = Modifier.padding(bottom = 16.dp),
                 containerColor = MaterialTheme.colorScheme.primaryContainer,
                 contentColor = MaterialTheme.colorScheme.onPrimaryContainer
             ) {
@@ -117,6 +119,7 @@ fun DiscoveryScreen(
                 )
             }
         },
+        floatingActionButtonPosition = FabPosition.End,
         snackbarHost = {
             SnackbarHost(hostState = snackbarHostState) { data ->
                 Snackbar(
@@ -188,7 +191,7 @@ fun DiscoveryScreen(
                             DeviceCard(
                                 device = device,
                                 onClick = { onDeviceClick(device.address) },
-                                modifier = Modifier.animateItemPlacement()
+                                modifier = Modifier
                             )
                         }
                     }
@@ -214,7 +217,7 @@ fun DiscoveryScreen(
                                         onDeviceClick(device.address)
                                     }
                                 },
-                                modifier = Modifier.animateItemPlacement()
+                                modifier = Modifier
                             )
                         }
                     }

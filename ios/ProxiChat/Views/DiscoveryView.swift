@@ -44,7 +44,8 @@ struct DiscoveryView: View {
             }
             .overlay(alignment: .bottomTrailing) {
                 scanButton
-                    .padding(16)
+                    .padding(.trailing, 20)
+                    .padding(.bottom, 32)
             }
             .onAppear {
                 viewModel.startDiscovery()
