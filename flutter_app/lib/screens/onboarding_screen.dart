@@ -16,18 +16,30 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   bool _permissionsGranted = false;
 
   Future<void> _requestPermissions() async {
-    final statuses = await [
-      Permission.bluetoothScan,
-      Permission.bluetoothAdvertise,
-      Permission.bluetoothConnect,
-      Permission.location,
-      if (Platform.isAndroid) Permission.notification,
-    ].request();
-    final allGranted = statuses.values.every((s) => s.isGranted || s.isLimited);
-    setState(() {
-      _permissionsGranted = allGranted;
-      if (allGranted) _step = 2;
-    });
+    if (Platform.isAndroid) {
+      // Android needs explicit runtime permissions
+      final statuses = await [
+        Permission.bluetoothScan,
+        Permission.bluetoothAdvertise,
+        Permission.bluetoothConnect,
+        Permission.location,
+        Permission.notification,
+      ].request();
+      final allGranted = statuses.values.every((s) => s.isGranted || s.isLimited);
+      setState(() {
+        _permissionsGranted = allGranted;
+        if (allGranted) _step = 2;
+      });
+    } else {
+      // iOS: Bluetooth permission is requested automatically by the system
+      // when CBCentralManager/CBPeripheralManager are first used.
+      // Just request location (needed for BLE on some iOS versions) and move on.
+      await Permission.location.request();
+      setState(() {
+        _permissionsGranted = true;
+        _step = 2;
+      });
+    }
   }
 
   void _finish() {
