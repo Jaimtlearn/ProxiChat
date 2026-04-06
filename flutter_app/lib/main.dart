@@ -1,4 +1,6 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:provider/provider.dart';
 import 'bluetooth/ble_controller.dart';
 import 'data/message_store.dart';
@@ -60,6 +62,11 @@ class _HomeScreenState extends State<_HomeScreen> {
   }
 
   Future<void> _init() async {
+    // On Android, ensure Bluetooth adapter is on and Location is enabled
+    if (defaultTargetPlatform == TargetPlatform.android) {
+      await FlutterBluePlus.turnOn();
+    }
+
     final ble = context.read<BleController>();
     final prefs = context.read<UserPreferences>();
     await ble.initialize(prefs.displayName);

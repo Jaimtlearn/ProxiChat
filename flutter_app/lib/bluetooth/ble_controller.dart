@@ -149,17 +149,25 @@ class BleController extends ChangeNotifier {
       _scanSub?.cancel();
       _scanSub = FlutterBluePlus.onScanResults.listen((results) {
         for (final r in results) {
-          _processScanResult(r);
+          // Filter: only show devices advertising our service UUID
+          final hasOurUuid = r.advertisementData.serviceUuids
+              .any((u) => u.toString().toLowerCase() == BleConstants.serviceUuidStr.toLowerCase());
+          if (hasOurUuid) {
+            _processScanResult(r);
+          }
         }
       });
 
+      // On Android: scan WITHOUT UUID filter (hardware filters are broken on many devices)
+      // On iOS: use UUID filter (CoreBluetooth handles it correctly)
+      final isAndroid = defaultTargetPlatform == TargetPlatform.android;
       await FlutterBluePlus.startScan(
-        withServices: [BleConstants.serviceUuid],
+        withServices: isAndroid ? [] : [BleConstants.serviceUuid],
         androidUsesFineLocation: true,
         continuousUpdates: true,
         removeIfGone: const Duration(seconds: 30),
       );
-      debugPrint('[BLE] Scan STARTED');
+      debugPrint('[BLE] Scan STARTED (android filter bypass: $isAndroid)');
     } catch (e) {
       debugPrint('[BLE] Scan error: $e');
       _isScanning = false;
