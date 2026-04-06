@@ -1,4 +1,4 @@
-name: Build ProxiChat
+name: Build ProxiChat (Flutter)
 
 on:
   push:
@@ -10,63 +10,88 @@ jobs:
   # ── Android APK ──
   build-android:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: flutter_app
 
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+    - uses: actions/checkout@v4
 
-    - name: Set up JDK 17
-      uses: actions/setup-java@v4
+    - uses: subosito/flutter-action@v2
       with:
-        distribution: 'temurin'
-        java-version: '17'
+        flutter-version: '3.24.0'
+        channel: 'stable'
 
-    - name: Setup Gradle
-      uses: gradle/actions/setup-gradle@v4
-      with:
-        gradle-version: '8.5'
+    - name: Create Flutter project scaffold
+      working-directory: .
+      run: |
+        cd flutter_app
+        # Generate android/ and ios/ platform directories
+        flutter create --org com.proxichat --project-name proxichat --platforms android,ios .
 
-    - name: Accept Android SDK licenses
-      run: yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
+    - name: Apply Android permissions
+      run: cp android_overrides/AndroidManifest.xml android/app/src/main/AndroidManifest.xml
 
-    - name: Build Debug APK
-      run: gradle assembleDebug
+    - name: Set Android minSdk to 21
+      run: |
+        sed -i 's/minSdk = .*/minSdk = 21/' android/app/build.gradle.kts 2>/dev/null || \
+        sed -i 's/minSdkVersion .*/minSdkVersion 21/' android/app/build.gradle 2>/dev/null || true
+
+    - name: Get dependencies
+      run: flutter pub get
+
+    - name: Build APK
+      run: flutter build apk --release
 
     - name: Upload APK
       uses: actions/upload-artifact@v4
       with:
         name: ProxiChat-Android
-        path: app/build/outputs/apk/debug/app-debug.apk
+        path: flutter_app/build/app/outputs/flutter-apk/app-release.apk
 
   # ── iOS IPA ──
   build-ios:
     runs-on: macos-14
+    defaults:
+      run:
+        working-directory: flutter_app
 
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+    - uses: actions/checkout@v4
 
-    - name: Select Xcode version
-      run: sudo xcode-select -s /Applications/Xcode_15.4.app/Contents/Developer
+    - uses: subosito/flutter-action@v2
+      with:
+        flutter-version: '3.24.0'
+        channel: 'stable'
 
-    - name: Build ProxiChat
-      working-directory: ios
+    - name: Create Flutter project scaffold
+      working-directory: .
       run: |
-        xcodebuild build \
-          -project ProxiChat.xcodeproj \
-          -target ProxiChat \
-          -sdk iphoneos \
-          -configuration Release \
-          CONFIGURATION_BUILD_DIR=${{ github.workspace }}/build \
-          CODE_SIGN_IDENTITY="" \
-          CODE_SIGNING_REQUIRED=NO \
-          CODE_SIGNING_ALLOWED=NO \
-          ONLY_ACTIVE_ARCH=NO
+        cd flutter_app
+        flutter create --org com.proxichat --project-name proxichat --platforms android,ios .
+
+    - name: Apply iOS permissions
+      run: cp ios_overrides/Info.plist ios/Runner/Info.plist
+
+    - name: Set iOS deployment target
+      run: |
+        # Ensure minimum iOS 16
+        cd ios
+        sed -i '' "s/IPHONEOS_DEPLOYMENT_TARGET = .*/IPHONEOS_DEPLOYMENT_TARGET = 16.0;/" Runner.xcodeproj/project.pbxproj
+
+    - name: Install CocoaPods
+      run: cd ios && pod install --repo-update || true
+
+    - name: Get dependencies
+      run: flutter pub get
+
+    - name: Build iOS (no codesign)
+      run: flutter build ios --release --no-codesign
 
     - name: Create IPA
       run: |
         mkdir -p stage/Payload
-        cp -r build/ProxiChat.app stage/Payload/
+        cp -r build/ios/iphoneos/Runner.app stage/Payload/
         cd stage
         zip -r -y ../ProxiChat.ipa Payload
 
@@ -74,4 +99,4 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: ProxiChat-iOS
-        path: ProxiChat.ipa
+        path: flutter_app/ProxiChat.ipa

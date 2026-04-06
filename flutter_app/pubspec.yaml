@@ -1,0 +1,40 @@
+name: proxichat
+description: Bluetooth proximity chat — no internet required.
+version: 1.0.0+1
+publish_to: none
+
+environment:
+  sdk: '>=3.2.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # BLE - Central role (scan + connect + GATT client)
+  flutter_blue_plus: ^1.35.2
+
+  # BLE - Peripheral role (advertise + GATT server)
+  ble_peripheral: ^1.0.1
+
+  # State management
+  provider: ^6.1.2
+
+  # Preferences
+  shared_preferences: ^2.3.3
+
+  # Permissions
+  permission_handler: ^11.3.1
+
+  # UI
+  google_fonts: ^6.2.1
+
+  # JSON
+  uuid: ^4.5.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true
