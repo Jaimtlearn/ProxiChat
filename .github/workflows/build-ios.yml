@@ -31,8 +31,13 @@ jobs:
     - name: Apply Android permissions
       run: cp android_overrides/AndroidManifest.xml android/app/src/main/AndroidManifest.xml
 
-    - name: Fix Android minSdk
+    - name: Fix Android Kotlin version + minSdk
       run: |
+        # Update Kotlin to 1.9.22 (required by shared_preferences_android and flutter_blue_plus)
+        sed -i 's/id "org.jetbrains.kotlin.android" version "[^"]*"/id "org.jetbrains.kotlin.android" version "1.9.22"/' android/settings.gradle 2>/dev/null || true
+        sed -i "s/ext.kotlin_version = .*/ext.kotlin_version = '1.9.22'/" android/build.gradle 2>/dev/null || true
+
+        # Set minSdk
         sed -i 's/minSdk = .*/minSdk = 21/' android/app/build.gradle.kts 2>/dev/null || true
         sed -i 's/minSdkVersion .*/minSdkVersion 21/' android/app/build.gradle 2>/dev/null || true
 
@@ -41,14 +46,12 @@ jobs:
 
     - name: Patch flutter_blue_plus Gradle (replaces flutter.xxx with hardcoded values)
       run: |
-        FBP=$(find $HOME/.pub-cache -path "*/flutter_blue_plus_android*/android/build.gradle" | head -1)
-        if [ -n "$FBP" ]; then
-          echo "Patching: $FBP"
-          sed -i 's/flutter\.compileSdkVersion/34/g' "$FBP"
-          sed -i 's/flutter\.minSdkVersion/21/g' "$FBP"
-          sed -i 's/flutter\.targetSdkVersion/34/g' "$FBP"
-          echo "Patched OK"
-        fi
+        for f in $(find $HOME/.pub-cache -path "*/flutter_blue_plus*/android/build.gradle"); do
+          echo "Patching: $f"
+          sed -i 's/flutter\.compileSdkVersion/34/g' "$f"
+          sed -i 's/flutter\.minSdkVersion/21/g' "$f"
+          sed -i 's/flutter\.targetSdkVersion/34/g' "$f"
+        done
 
     - name: Build APK
       run: flutter build apk --release
