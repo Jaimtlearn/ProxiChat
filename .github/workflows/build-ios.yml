@@ -33,49 +33,16 @@ jobs:
 
     - name: Fix Android Gradle for plugin compatibility
       run: |
-        # Set compileSdk/minSdk in android/app/build.gradle
-        sed -i 's/minSdk = .*/minSdk = 21/' android/app/build.gradle.kts 2>/dev/null || \
+        # Set flutter SDK versions in gradle.properties (plugins read these)
+        cat >> android/gradle.properties << 'EOF'
+        flutter.compileSdkVersion=34
+        flutter.targetSdkVersion=34
+        flutter.minSdkVersion=21
+        EOF
+
+        # Also patch app/build.gradle directly for minSdk
+        sed -i 's/minSdk = .*/minSdk = 21/' android/app/build.gradle.kts 2>/dev/null || true
         sed -i 's/minSdkVersion .*/minSdkVersion 21/' android/app/build.gradle 2>/dev/null || true
-
-        sed -i 's/compileSdk = .*/compileSdk = 34/' android/app/build.gradle.kts 2>/dev/null || \
-        sed -i 's/compileSdkVersion .*/compileSdkVersion 34/' android/app/build.gradle 2>/dev/null || true
-
-        # Add ext block to root build.gradle so plugins can find flutter.compileSdkVersion
-        if [ -f android/build.gradle ]; then
-          cat >> android/build.gradle << 'GRADLEOF'
-
-        subprojects {
-            afterEvaluate { project ->
-                if (project.plugins.hasPlugin("com.android.library")) {
-                    project.android {
-                        compileSdk = 34
-                        if (namespace == null) {
-                            namespace = project.group.toString()
-                        }
-                    }
-                }
-            }
-        }
-        GRADLEOF
-        fi
-
-        if [ -f android/build.gradle.kts ]; then
-          cat >> android/build.gradle.kts << 'GRADLEOF'
-
-        subprojects {
-            afterEvaluate {
-                if (plugins.hasPlugin("com.android.library")) {
-                    extensions.configure<com.android.build.gradle.LibraryExtension> {
-                        compileSdk = 34
-                        if (namespace == null) {
-                            namespace = project.group.toString()
-                        }
-                    }
-                }
-            }
-        }
-        GRADLEOF
-        fi
 
     - name: Get dependencies
       run: flutter pub get
