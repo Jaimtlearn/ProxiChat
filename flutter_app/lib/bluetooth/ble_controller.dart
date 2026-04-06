@@ -230,33 +230,54 @@ class BleController extends ChangeNotifier {
 
     _updateState(deviceId, ConnectionState_.connecting);
     try {
+      // Connect with longer timeout
       await device!.bleDevice!.connect(
-        timeout: const Duration(seconds: 10),
+        timeout: const Duration(seconds: 15),
         autoConnect: false,
       );
 
+      // On Android, clear stale GATT cache so we get fresh service discovery
+      if (defaultTargetPlatform == TargetPlatform.android) {
+        await device.bleDevice!.clearGattCache();
+        await Future.delayed(const Duration(milliseconds: 500));
+      }
+
+      // Request MTU before service discovery (some devices need this first)
+      try { await device.bleDevice!.requestMtu(512); } catch (_) {}
+
+      // Discover services
       final services = await device.bleDevice!.discoverServices();
+      debugPrint('[BLE] Found ${services.length} services on $deviceId');
+      for (final s in services) {
+        debugPrint('[BLE]   Service: ${s.uuid}');
+      }
+
+      // Find our service (case-insensitive UUID comparison)
       final svc = services.firstWhere(
-        (s) => s.uuid == BleConstants.serviceUuid,
-        orElse: () => throw Exception('Service not found'),
+        (s) => s.uuid.toString().toLowerCase() == BleConstants.serviceUuidStr.toLowerCase(),
+        orElse: () => throw Exception(
+            'ProxiChat service not found. Found ${services.length} services: '
+            '${services.map((s) => s.uuid).join(", ")}'),
       );
 
+      // Find and set up characteristics
       for (final c in svc.characteristics) {
-        if (c.uuid == BleConstants.writeCharUuid) {
+        final charUuid = c.uuid.toString().toLowerCase();
+        if (charUuid == BleConstants.writeCharUuidStr.toLowerCase()) {
           _writeChars[deviceId] = c;
+          debugPrint('[BLE] Found write characteristic');
         }
-        if (c.uuid == BleConstants.notifyCharUuid) {
+        if (charUuid == BleConstants.notifyCharUuidStr.toLowerCase()) {
           await c.setNotifyValue(true);
           c.onValueReceived.listen((value) {
             _handleIncomingData(deviceId, Uint8List.fromList(value));
           });
+          debugPrint('[BLE] Subscribed to notify characteristic');
         }
       }
 
-      try { await device.bleDevice!.requestMtu(512); } catch (_) {}
-
       _updateState(deviceId, ConnectionState_.connected);
-      debugPrint('[BLE] Connected to $deviceId');
+      debugPrint('[BLE] Fully connected to $deviceId');
 
       // Watch for disconnection
       device.bleDevice!.connectionState.listen((state) {
