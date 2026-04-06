@@ -11,30 +11,29 @@ import 'constants.dart';
 import '../models/chat_device.dart';
 import '../models/chat_message.dart';
 
-/// Unified BLE controller handling both central (scan/connect) and peripheral (advertise/serve) roles.
+/// Unified BLE controller: central (flutter_blue_plus) + peripheral (ble_peripheral).
 class BleController extends ChangeNotifier {
-  // State
   final Map<String, ChatDevice> _devices = {};
-  final Map<String, BluetoothCharacteristic> _writeChars = {}; // GATT client write chars
-  final Map<String, BluetoothCharacteristic> _notifyChars = {};
+  final Map<String, BluetoothCharacteristic> _writeChars = {};
   final Map<String, bool> typingStates = {};
   bool _isScanning = false;
   bool _isAdvertising = false;
   bool _initialized = false;
   String _displayName = 'User';
   Timer? _pruneTimer;
+  StreamSubscription? _scanSub;
 
-  // Streams for incoming messages
   final _messageController = StreamController<ChatMessage>.broadcast();
   final _ackController = StreamController<Map<String, String>>.broadcast();
 
   Stream<ChatMessage> get incomingMessages => _messageController.stream;
   Stream<Map<String, String>> get incomingAcks => _ackController.stream;
-  List<ChatDevice> get devices => _devices.values.toList()..sort((a, b) => b.rssi.compareTo(a.rssi));
+  List<ChatDevice> get devices =>
+      _devices.values.toList()..sort((a, b) => b.rssi.compareTo(a.rssi));
   bool get isScanning => _isScanning;
   bool get isAdvertising => _isAdvertising;
 
-  // ========== INITIALIZATION ==========
+  // ==================== INIT ====================
 
   Future<void> initialize(String displayName) async {
     if (_initialized) {
@@ -44,21 +43,32 @@ class BleController extends ChangeNotifier {
     _initialized = true;
     _displayName = displayName;
 
-    // Initialize peripheral (GATT server + advertiser)
-    await _initPeripheral();
-
-    // Start prune timer
-    _pruneTimer = Timer.periodic(const Duration(seconds: 5), (_) => _pruneStaleDevices());
-  }
-
-  Future<void> _initPeripheral() async {
     try {
       await BlePeripheral.initialize();
 
-      // Set up GATT server callbacks
-      BlePeripheral.setWriteRequestCallback(_onWriteRequest);
-      BlePeripheral.setReadRequestCallback(_onReadRequest);
-      BlePeripheral.setCharacteristicSubscriptionChangeCallback(_onSubscriptionChange);
+      // Listen for incoming write requests (messages from other devices)
+      BlePeripheral.setWriteRequestCallback(
+        (String deviceId, String charId, int offset, Uint8List? value) {
+          if (value != null &&
+              charId.toLowerCase() == BleConstants.writeCharUuidStr.toLowerCase()) {
+            _handleIncomingData(deviceId, value);
+          }
+          return WriteRequestResult(status: 0); // GATT_SUCCESS
+        },
+      );
+
+      // Listen for read requests on profile characteristic
+      BlePeripheral.setReadRequestCallback(
+        (String deviceId, String charId, int offset, Uint8List? value) {
+          if (charId.toLowerCase() == BleConstants.profileCharUuidStr.toLowerCase()) {
+            return ReadRequestResult(
+              value: Uint8List.fromList(utf8.encode(_displayName)),
+              offset: 0,
+            );
+          }
+          return ReadRequestResult(value: Uint8List(0), offset: 0);
+        },
+      );
 
       // Add our GATT service
       await BlePeripheral.addService(
@@ -66,41 +76,47 @@ class BleController extends ChangeNotifier {
           uuid: BleConstants.serviceUuidStr,
           primary: true,
           characteristics: [
+            // Write characteristic — other devices write messages to us
             BleCharacteristic(
               uuid: BleConstants.writeCharUuidStr,
               properties: [
-                CharacteristicProperties.write.index,
-                CharacteristicProperties.writeWithoutResponse.index,
+                CharacteristicProperties.write,
+                CharacteristicProperties.writeWithoutResponse,
               ],
               value: null,
-              permissions: [AttributePermissions.writeable.index],
+              permissions: [AttributePermissions.writeable],
             ),
+            // Notify characteristic — we send messages to subscribed devices
             BleCharacteristic(
               uuid: BleConstants.notifyCharUuidStr,
               properties: [
-                CharacteristicProperties.notify.index,
-                CharacteristicProperties.read.index,
+                CharacteristicProperties.notify,
+                CharacteristicProperties.read,
               ],
               value: null,
-              permissions: [AttributePermissions.readable.index],
+              permissions: [AttributePermissions.readable],
             ),
+            // Profile characteristic — readable display name
             BleCharacteristic(
               uuid: BleConstants.profileCharUuidStr,
-              properties: [CharacteristicProperties.read.index],
+              properties: [CharacteristicProperties.read],
               value: Uint8List.fromList(utf8.encode(_displayName)),
-              permissions: [AttributePermissions.readable.index],
+              permissions: [AttributePermissions.readable],
             ),
           ],
         ),
       );
 
-      debugPrint('[BLE] GATT service added');
+      debugPrint('[BLE] GATT service added OK');
     } catch (e) {
       debugPrint('[BLE] Peripheral init error: $e');
     }
+
+    _pruneTimer =
+        Timer.periodic(const Duration(seconds: 5), (_) => _pruneStaleDevices());
   }
 
-  // ========== ADVERTISING ==========
+  // ==================== ADVERTISING ====================
 
   Future<void> startAdvertising() async {
     if (_isAdvertising) return;
@@ -125,7 +141,7 @@ class BleController extends ChangeNotifier {
     notifyListeners();
   }
 
-  // ========== SCANNING ==========
+  // ==================== SCANNING ====================
 
   Future<void> startScanning() async {
     if (_isScanning) return;
@@ -133,21 +149,19 @@ class BleController extends ChangeNotifier {
     notifyListeners();
 
     try {
-      // Listen to scan results
-      FlutterBluePlus.scanResults.listen((results) {
+      _scanSub?.cancel();
+      _scanSub = FlutterBluePlus.onScanResults.listen((results) {
         for (final r in results) {
           _processScanResult(r);
         }
       });
 
-      // Start scan — withServices filter works on iOS, on Android it's best-effort
       await FlutterBluePlus.startScan(
         withServices: [BleConstants.serviceUuid],
         androidUsesFineLocation: true,
         continuousUpdates: true,
-        removeIfGone: Duration(seconds: BleConstants.staleDeviceTimeoutSec),
+        removeIfGone: const Duration(seconds: 30),
       );
-
       debugPrint('[BLE] Scan STARTED');
     } catch (e) {
       debugPrint('[BLE] Scan error: $e');
@@ -160,11 +174,11 @@ class BleController extends ChangeNotifier {
     try {
       await FlutterBluePlus.stopScan();
     } catch (_) {}
+    _scanSub?.cancel();
     _isScanning = false;
     notifyListeners();
   }
 
-  // Start both advertising and scanning
   Future<void> startDiscovery() async {
     await startAdvertising();
     await startScanning();
@@ -183,7 +197,7 @@ class BleController extends ChangeNotifier {
             : 'ProxiChat User';
 
     final existing = _devices[id];
-    final smoothedRssi = existing != null
+    final rssi = existing != null
         ? (BleConstants.rssiSmoothing * result.rssi +
                 (1 - BleConstants.rssiSmoothing) * existing.rssi)
             .toInt()
@@ -193,7 +207,7 @@ class BleController extends ChangeNotifier {
       id: id,
       name: name,
       displayName: existing?.displayName ?? name,
-      rssi: smoothedRssi,
+      rssi: rssi,
       connectionState: existing?.connectionState ?? ConnectionState_.disconnected,
       lastSeen: DateTime.now(),
       avatarColorIndex: id.hashCode.abs() % 8,
@@ -203,34 +217,30 @@ class BleController extends ChangeNotifier {
     notifyListeners();
   }
 
-  // ========== CONNECTION ==========
+  // ==================== CONNECTION ====================
 
   Future<bool> connectToDevice(String deviceId) async {
     final device = _devices[deviceId];
-    if (device == null || device.bleDevice == null) return false;
+    if (device?.bleDevice == null) return false;
 
-    _updateDeviceState(deviceId, ConnectionState_.connecting);
+    _updateState(deviceId, ConnectionState_.connecting);
     try {
-      await device.bleDevice!.connect(
-        timeout: Duration(seconds: BleConstants.connectionTimeoutSec),
+      await device!.bleDevice!.connect(
+        timeout: const Duration(seconds: 10),
         autoConnect: false,
       );
 
-      // Discover services
       final services = await device.bleDevice!.discoverServices();
       final svc = services.firstWhere(
         (s) => s.uuid == BleConstants.serviceUuid,
-        orElse: () => throw Exception('ProxiChat service not found'),
+        orElse: () => throw Exception('Service not found'),
       );
 
-      // Find characteristics
       for (final c in svc.characteristics) {
         if (c.uuid == BleConstants.writeCharUuid) {
           _writeChars[deviceId] = c;
         }
         if (c.uuid == BleConstants.notifyCharUuid) {
-          _notifyChars[deviceId] = c;
-          // Subscribe to notifications (incoming messages from remote device)
           await c.setNotifyValue(true);
           c.onValueReceived.listen((value) {
             _handleIncomingData(deviceId, Uint8List.fromList(value));
@@ -238,96 +248,77 @@ class BleController extends ChangeNotifier {
         }
       }
 
-      // Request higher MTU
-      try {
-        await device.bleDevice!.requestMtu(512);
-      } catch (_) {}
+      try { await device.bleDevice!.requestMtu(512); } catch (_) {}
 
-      _updateDeviceState(deviceId, ConnectionState_.connected);
+      _updateState(deviceId, ConnectionState_.connected);
       debugPrint('[BLE] Connected to $deviceId');
 
-      // Listen for disconnect
+      // Watch for disconnection
       device.bleDevice!.connectionState.listen((state) {
         if (state == BluetoothConnectionState.disconnected) {
           _writeChars.remove(deviceId);
-          _notifyChars.remove(deviceId);
-          _updateDeviceState(deviceId, ConnectionState_.disconnected);
+          _updateState(deviceId, ConnectionState_.disconnected);
         }
       });
 
       return true;
     } catch (e) {
-      debugPrint('[BLE] Connection failed: $e');
-      _updateDeviceState(deviceId, ConnectionState_.failed);
+      debugPrint('[BLE] Connect failed: $e');
+      _updateState(deviceId, ConnectionState_.failed);
       return false;
     }
   }
 
   Future<void> disconnectFromDevice(String deviceId) async {
-    final device = _devices[deviceId];
-    if (device?.bleDevice != null) {
-      try {
-        await device!.bleDevice!.disconnect();
-      } catch (_) {}
-    }
+    try {
+      await _devices[deviceId]?.bleDevice?.disconnect();
+    } catch (_) {}
     _writeChars.remove(deviceId);
-    _notifyChars.remove(deviceId);
-    _updateDeviceState(deviceId, ConnectionState_.disconnected);
+    _updateState(deviceId, ConnectionState_.disconnected);
   }
 
-  // ========== MESSAGING ==========
+  // ==================== MESSAGING ====================
 
-  Future<bool> sendTextMessage(String deviceId, String text, String messageId) async {
-    final payload = jsonEncode({
-      't': 'MSG',
-      'i': messageId,
-      's': 'local',
+  Future<bool> sendTextMessage(String deviceId, String text, String msgId) async {
+    final json = jsonEncode({
+      't': 'MSG', 'i': msgId, 's': 'local',
       'ts': DateTime.now().millisecondsSinceEpoch,
-      'p': {'text': text},
-      'e': false,
+      'p': {'text': text}, 'e': false,
     });
-
-    return _sendToDevice(deviceId, utf8.encode(payload));
+    return _sendToDevice(deviceId, utf8.encode(json));
   }
 
-  void sendAck(String deviceId, String messageId, String status) {
-    final payload = jsonEncode({
-      't': 'ACK',
-      'i': const Uuid().v4(),
-      's': 'local',
+  void sendAck(String deviceId, String msgId, String status) {
+    final json = jsonEncode({
+      't': 'ACK', 'i': const Uuid().v4(), 's': 'local',
       'ts': DateTime.now().millisecondsSinceEpoch,
-      'p': {'messageId': messageId, 'status': status},
-      'e': false,
+      'p': {'messageId': msgId, 'status': status}, 'e': false,
     });
-    _sendToDevice(deviceId, utf8.encode(payload));
+    _sendToDevice(deviceId, utf8.encode(json));
   }
 
   void sendTypingIndicator(String deviceId, bool isTyping) {
-    final payload = jsonEncode({
-      't': 'TYPING',
-      'i': const Uuid().v4(),
-      's': 'local',
+    final json = jsonEncode({
+      't': 'TYPING', 'i': const Uuid().v4(), 's': 'local',
       'ts': DateTime.now().millisecondsSinceEpoch,
-      'p': {'isTyping': isTyping},
-      'e': false,
+      'p': {'isTyping': isTyping}, 'e': false,
     });
-    _sendToDevice(deviceId, utf8.encode(payload));
+    _sendToDevice(deviceId, utf8.encode(json));
   }
 
   Future<bool> _sendToDevice(String deviceId, List<int> data) async {
-    // Try GATT client path (we connected to them)
+    // Try GATT client path first
     final writeChar = _writeChars[deviceId];
     if (writeChar != null) {
       try {
         await writeChar.write(data, withoutResponse: false);
         return true;
       } catch (e) {
-        debugPrint('[BLE] Write failed: $e');
-        return false;
+        debugPrint('[BLE] Client write failed: $e');
       }
     }
 
-    // Try GATT server path (they connected to us)
+    // Try GATT server path (notify subscribed device)
     try {
       await BlePeripheral.updateCharacteristic(
         characteristicId: BleConstants.notifyCharUuidStr,
@@ -336,85 +327,54 @@ class BleController extends ChangeNotifier {
       );
       return true;
     } catch (e) {
-      debugPrint('[BLE] Notify failed: $e');
-      return false;
+      debugPrint('[BLE] Server notify failed: $e');
     }
+
+    return false;
   }
 
-  // ========== GATT SERVER CALLBACKS ==========
-
-  void _onWriteRequest(String deviceId, String characteristicId, int offset, Uint8List? value) {
-    if (characteristicId.toLowerCase() == BleConstants.writeCharUuidStr.toLowerCase() && value != null) {
-      _handleIncomingData(deviceId, value);
-    }
-  }
-
-  ReadRequestResult? _onReadRequest(String deviceId, String characteristicId, int offset, Uint8List? value) {
-    if (characteristicId.toLowerCase() == BleConstants.profileCharUuidStr.toLowerCase()) {
-      return ReadRequestResult(
-        value: Uint8List.fromList(utf8.encode(_displayName)),
-        offset: offset,
-      );
-    }
-    return null;
-  }
-
-  void _onSubscriptionChange(String deviceId, String characteristicId, bool isSubscribed) {
-    debugPrint('[BLE] Device $deviceId ${isSubscribed ? "subscribed" : "unsubscribed"}');
-  }
-
-  // ========== INCOMING MESSAGE HANDLER ==========
+  // ==================== INCOMING DATA ====================
 
   void _handleIncomingData(String senderId, Uint8List data) {
     try {
       final json = jsonDecode(utf8.decode(data)) as Map<String, dynamic>;
       final type = json['t'] as String;
+      final payload = json['p'] as Map<String, dynamic>? ?? {};
 
       switch (type) {
         case 'MSG':
-          final text = (json['p'] as Map<String, dynamic>)['text'] as String;
-          final msg = ChatMessage(
-            id: json['i'],
-            deviceId: senderId,
-            text: text,
+          _messageController.add(ChatMessage(
+            id: json['i'], deviceId: senderId,
+            text: payload['text'] as String,
             timestamp: DateTime.fromMillisecondsSinceEpoch(json['ts']),
-            isOutgoing: false,
-            status: MessageStatus.delivered,
-          );
-          _messageController.add(msg);
+            isOutgoing: false, status: MessageStatus.delivered,
+          ));
           sendAck(senderId, json['i'], 'DELIVERED');
-          break;
 
         case 'ACK':
-          final p = json['p'] as Map<String, dynamic>;
           _ackController.add({
-            'messageId': p['messageId'] as String,
-            'status': p['status'] as String,
+            'messageId': payload['messageId'] as String,
+            'status': payload['status'] as String,
           });
-          break;
 
         case 'TYPING':
-          final isTyping = (json['p'] as Map<String, dynamic>)['isTyping'] == true;
-          typingStates[senderId] = isTyping;
+          typingStates[senderId] = payload['isTyping'] == true;
           notifyListeners();
-          break;
 
         case 'PROFILE':
-          final name = (json['p'] as Map<String, dynamic>)['displayName'] as String;
           if (_devices.containsKey(senderId)) {
-            _devices[senderId]!.displayName = name;
+            _devices[senderId]!.displayName = payload['displayName'] as String;
             notifyListeners();
           }
-          break;
       }
     } catch (e) {
-      debugPrint('[BLE] Failed to parse message: $e');
+      debugPrint('[BLE] Parse error: $e');
     }
   }
 
-  // ========== HELPERS ==========
+  // ==================== HELPERS ====================
 
-  void _updateDeviceState(String id, ConnectionState_ state) {
+  void _updateState(String id, ConnectionState_ state) {
     if (_devices.containsKey(id)) {
       _devices[id]!.connectionState = state;
       notifyListeners();
@@ -422,9 +382,10 @@ class BleController extends ChangeNotifier {
   }
 
   void _pruneStaleDevices() {
-    final cutoff = DateTime.now().subtract(Duration(seconds: BleConstants.staleDeviceTimeoutSec));
-    _devices.removeWhere((_, d) =>
-        d.connectionState != ConnectionState_.connected && d.lastSeen.isBefore(cutoff));
+    final cutoff = DateTime.now().subtract(
+        const Duration(seconds: BleConstants.staleDeviceTimeoutSec));
+    _devices.removeWhere(
+        (_, d) => !d.isConnected && d.lastSeen.isBefore(cutoff));
     notifyListeners();
   }
 
@@ -439,10 +400,10 @@ class BleController extends ChangeNotifier {
 
   Future<void> shutdown() async {
     _pruneTimer?.cancel();
+    _scanSub?.cancel();
     await stopScanning();
     await stopAdvertising();
     _writeChars.clear();
-    _notifyChars.clear();
     _initialized = false;
   }
 
