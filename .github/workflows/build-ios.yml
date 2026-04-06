@@ -31,21 +31,24 @@ jobs:
     - name: Apply Android permissions
       run: cp android_overrides/AndroidManifest.xml android/app/src/main/AndroidManifest.xml
 
-    - name: Fix Android Gradle for plugin compatibility
+    - name: Fix Android minSdk
       run: |
-        # Set flutter SDK versions in gradle.properties (plugins read these)
-        cat >> android/gradle.properties << 'EOF'
-        flutter.compileSdkVersion=34
-        flutter.targetSdkVersion=34
-        flutter.minSdkVersion=21
-        EOF
-
-        # Also patch app/build.gradle directly for minSdk
         sed -i 's/minSdk = .*/minSdk = 21/' android/app/build.gradle.kts 2>/dev/null || true
         sed -i 's/minSdkVersion .*/minSdkVersion 21/' android/app/build.gradle 2>/dev/null || true
 
     - name: Get dependencies
       run: flutter pub get
+
+    - name: Patch flutter_blue_plus Gradle (replaces flutter.xxx with hardcoded values)
+      run: |
+        FBP=$(find $HOME/.pub-cache -path "*/flutter_blue_plus_android*/android/build.gradle" | head -1)
+        if [ -n "$FBP" ]; then
+          echo "Patching: $FBP"
+          sed -i 's/flutter\.compileSdkVersion/34/g' "$FBP"
+          sed -i 's/flutter\.minSdkVersion/21/g' "$FBP"
+          sed -i 's/flutter\.targetSdkVersion/34/g' "$FBP"
+          echo "Patched OK"
+        fi
 
     - name: Build APK
       run: flutter build apk --release
