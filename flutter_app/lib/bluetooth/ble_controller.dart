@@ -2,7 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
-import 'package:ble_peripheral/ble_peripheral.dart';
+import 'package:ble_peripheral/ble_peripheral.dart' as peripheral;
 import 'package:flutter/foundation.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:uuid/uuid.dart';
@@ -44,64 +44,61 @@ class BleController extends ChangeNotifier {
     _displayName = displayName;
 
     try {
-      await BlePeripheral.initialize();
+      await peripheral.BlePeripheral.initialize();
 
       // Listen for incoming write requests (messages from other devices)
-      BlePeripheral.setWriteRequestCallback(
+      peripheral.BlePeripheral.setWriteRequestCallback(
         (String deviceId, String charId, int offset, Uint8List? value) {
           if (value != null &&
               charId.toLowerCase() == BleConstants.writeCharUuidStr.toLowerCase()) {
             _handleIncomingData(deviceId, value);
           }
-          return WriteRequestResult(status: 0); // GATT_SUCCESS
+          return peripheral.WriteRequestResult(status: 0);
         },
       );
 
       // Listen for read requests on profile characteristic
-      BlePeripheral.setReadRequestCallback(
+      peripheral.BlePeripheral.setReadRequestCallback(
         (String deviceId, String charId, int offset, Uint8List? value) {
           if (charId.toLowerCase() == BleConstants.profileCharUuidStr.toLowerCase()) {
-            return ReadRequestResult(
+            return peripheral.ReadRequestResult(
               value: Uint8List.fromList(utf8.encode(_displayName)),
               offset: 0,
             );
           }
-          return ReadRequestResult(value: Uint8List(0), offset: 0);
+          return peripheral.ReadRequestResult(value: Uint8List(0), offset: 0);
         },
       );
 
       // Add our GATT service
-      await BlePeripheral.addService(
-        BleService(
+      await peripheral.BlePeripheral.addService(
+        peripheral.BleService(
           uuid: BleConstants.serviceUuidStr,
           primary: true,
           characteristics: [
-            // Write characteristic — other devices write messages to us
-            BleCharacteristic(
+            peripheral.BleCharacteristic(
               uuid: BleConstants.writeCharUuidStr,
               properties: [
-                CharacteristicProperties.write,
-                CharacteristicProperties.writeWithoutResponse,
+                peripheral.CharacteristicProperties.write,
+                peripheral.CharacteristicProperties.writeWithoutResponse,
               ],
               value: null,
-              permissions: [AttributePermissions.writeable],
+              permissions: [peripheral.AttributePermissions.writeable],
             ),
-            // Notify characteristic — we send messages to subscribed devices
-            BleCharacteristic(
+            peripheral.BleCharacteristic(
               uuid: BleConstants.notifyCharUuidStr,
               properties: [
-                CharacteristicProperties.notify,
-                CharacteristicProperties.read,
+                peripheral.CharacteristicProperties.notify,
+                peripheral.CharacteristicProperties.read,
               ],
               value: null,
-              permissions: [AttributePermissions.readable],
+              permissions: [peripheral.AttributePermissions.readable],
             ),
-            // Profile characteristic — readable display name
-            BleCharacteristic(
+            peripheral.BleCharacteristic(
               uuid: BleConstants.profileCharUuidStr,
-              properties: [CharacteristicProperties.read],
+              properties: [peripheral.CharacteristicProperties.read],
               value: Uint8List.fromList(utf8.encode(_displayName)),
-              permissions: [AttributePermissions.readable],
+              permissions: [peripheral.AttributePermissions.readable],
             ),
           ],
         ),
@@ -121,7 +118,7 @@ class BleController extends ChangeNotifier {
   Future<void> startAdvertising() async {
     if (_isAdvertising) return;
     try {
-      await BlePeripheral.startAdvertising(
+      await peripheral.BlePeripheral.startAdvertising(
         services: [BleConstants.serviceUuidStr],
         localName: _displayName,
       );
@@ -135,7 +132,7 @@ class BleController extends ChangeNotifier {
 
   Future<void> stopAdvertising() async {
     try {
-      await BlePeripheral.stopAdvertising();
+      await peripheral.BlePeripheral.stopAdvertising();
     } catch (_) {}
     _isAdvertising = false;
     notifyListeners();
@@ -320,7 +317,7 @@ class BleController extends ChangeNotifier {
 
     // Try GATT server path (notify subscribed device)
     try {
-      await BlePeripheral.updateCharacteristic(
+      await peripheral.BlePeripheral.updateCharacteristic(
         characteristicId: BleConstants.notifyCharUuidStr,
         value: Uint8List.fromList(data),
         deviceId: deviceId,
