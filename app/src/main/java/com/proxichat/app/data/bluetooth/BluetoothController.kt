@@ -75,11 +75,14 @@ class BluetoothController(
 
     private var displayName: String = "User"
 
-    fun initialize(displayName: String) {
+    suspend fun initialize(displayName: String) {
         this.displayName = displayName
 
-        // Start GATT server
-        gattServer.start()
+        // Start GATT server and wait for service registration to complete
+        val serverStarted = gattServer.start()
+        if (!serverStarted) {
+            Log.e(TAG, "GATT server failed to start — connections may not work")
+        }
         gattServer.updateProfileCharacteristic(displayName)
 
         // Listen for incoming messages from GATT server (devices writing to us)

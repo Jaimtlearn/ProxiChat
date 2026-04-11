@@ -39,6 +39,7 @@ class GattClientManager(
 
     companion object {
         private const val TAG = "GattClientManager"
+        private const val SERVICE_DISCOVERY_DELAY_MS = 600L
     }
 
     private val scope = CoroutineScope(Dispatchers.IO)
@@ -47,6 +48,11 @@ class GattClientManager(
     private val reconnectJobs = ConcurrentHashMap<String, Job>()
     private val reconnectAttempts = ConcurrentHashMap<String, Int>()
     private val autoReconnectAddresses = ConcurrentHashMap.newKeySet<String>()
+
+    // Per-connection GATT references so we can clean up on timeout
+    private val pendingGatts = ConcurrentHashMap<String, BluetoothGatt>()
+    // Per-connection deferreds — no more shared state across connections
+    private val setupDeferreds = ConcurrentHashMap<String, CompletableDeferred<Boolean>>()
 
     data class IncomingNotification(
         val senderAddress: String,
@@ -66,9 +72,6 @@ class GattClientManager(
     private val _incomingNotifications = MutableSharedFlow<IncomingNotification>(extraBufferCapacity = 64)
     val incomingNotifications: SharedFlow<IncomingNotification> = _incomingNotifications.asSharedFlow()
 
-    private var serviceDiscoveryDeferred: CompletableDeferred<Boolean>? = null
-    private var mtuDeferred: CompletableDeferred<Int>? = null
-
     private val gattCallback = object : BluetoothGattCallback() {
 
         override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
@@ -76,20 +79,45 @@ class GattClientManager(
                 val address = gatt.device.address
                 Log.d(TAG, "Connection state changed: $address -> $newState (status: $status)")
 
+                if (status != BluetoothGatt.GATT_SUCCESS && newState == BluetoothProfile.STATE_DISCONNECTED) {
+                    Log.e(TAG, "Connection failed for $address with GATT status $status")
+                    cleanupPendingGatt(address)
+                    setupDeferreds.remove(address)?.complete(false)
+                    connections.remove(address)
+                    connectionMtus.remove(address)
+                    updateState(address, ConnectionState.FAILED)
+                    gatt.close()
+                    if (autoReconnectAddresses.contains(address)) {
+                        scheduleReconnect(address)
+                    }
+                    return
+                }
+
                 when (newState) {
                     BluetoothProfile.STATE_CONNECTED -> {
                         updateState(address, ConnectionState.CONNECTING)
                         reconnectAttempts[address] = 0
-                        // Discover services to proceed with setup
-                        gatt.discoverServices()
+                        // Clear GATT cache to avoid stale service data, then discover
+                        refreshGattCache(gatt)
+                        // Delay before service discovery — many Android devices need this
+                        scope.launch {
+                            delay(SERVICE_DISCOVERY_DELAY_MS)
+                            try {
+                                gatt.discoverServices()
+                            } catch (e: SecurityException) {
+                                Log.e(TAG, "Permission denied for discoverServices", e)
+                                setupDeferreds.remove(address)?.complete(false)
+                            }
+                        }
                     }
                     BluetoothProfile.STATE_DISCONNECTED -> {
+                        cleanupPendingGatt(address)
+                        setupDeferreds.remove(address)?.complete(false)
                         connections.remove(address)
                         connectionMtus.remove(address)
                         updateState(address, ConnectionState.DISCONNECTED)
                         gatt.close()
 
-                        // Auto-reconnect if enabled
                         if (autoReconnectAddresses.contains(address)) {
                             scheduleReconnect(address)
                         }
@@ -104,13 +132,21 @@ class GattClientManager(
             try {
                 val address = gatt.device.address
                 if (status == BluetoothGatt.GATT_SUCCESS) {
-                    Log.d(TAG, "Services discovered for $address")
+                    val services = gatt.services
+                    Log.d(TAG, "Services discovered for $address: ${services.map { it.uuid }}")
+
+                    val hasOurService = gatt.getService(BluetoothConstants.SERVICE_UUID) != null
+                    if (!hasOurService) {
+                        Log.e(TAG, "ProxiChat service NOT found on $address after discovery")
+                        setupDeferreds.remove(address)?.complete(false)
+                        return
+                    }
 
                     // Request higher MTU
                     gatt.requestMtu(BluetoothConstants.PREFERRED_MTU)
                 } else {
                     Log.e(TAG, "Service discovery failed for $address with status $status")
-                    serviceDiscoveryDeferred?.complete(false)
+                    setupDeferreds.remove(address)?.complete(false)
                 }
             } catch (e: SecurityException) {
                 Log.e(TAG, "Security exception in services discovered", e)
@@ -120,10 +156,10 @@ class GattClientManager(
         override fun onMtuChanged(gatt: BluetoothGatt, mtu: Int, status: Int) {
             try {
                 val address = gatt.device.address
-                Log.d(TAG, "MTU changed for $address: $mtu")
+                Log.d(TAG, "MTU changed for $address: $mtu (status: $status)")
                 connectionMtus[address] = mtu
 
-                // Now subscribe to notifications
+                // Proceed even if MTU request was rejected — use whatever MTU we got
                 subscribeToNotifications(gatt)
             } catch (e: SecurityException) {
                 Log.e(TAG, "Security exception in MTU changed", e)
@@ -133,11 +169,17 @@ class GattClientManager(
         override fun onDescriptorWrite(gatt: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) {
             try {
                 val address = gatt.device.address
-                if (descriptor.uuid == BluetoothConstants.CCCD_UUID && status == BluetoothGatt.GATT_SUCCESS) {
-                    Log.d(TAG, "Subscribed to notifications on $address")
-                    connections[address] = gatt
-                    updateState(address, ConnectionState.CONNECTED)
-                    serviceDiscoveryDeferred?.complete(true)
+                if (descriptor.uuid == BluetoothConstants.CCCD_UUID) {
+                    if (status == BluetoothGatt.GATT_SUCCESS) {
+                        Log.d(TAG, "Subscribed to notifications on $address")
+                        pendingGatts.remove(address)
+                        connections[address] = gatt
+                        updateState(address, ConnectionState.CONNECTED)
+                        setupDeferreds.remove(address)?.complete(true)
+                    } else {
+                        Log.e(TAG, "CCCD write failed for $address with status $status")
+                        setupDeferreds.remove(address)?.complete(false)
+                    }
                 }
             } catch (e: SecurityException) {
                 Log.e(TAG, "Security exception in descriptor write", e)
@@ -187,6 +229,10 @@ class GattClientManager(
             return true
         }
 
+        // Cancel any pending connection to the same device
+        cleanupPendingGatt(address)
+        setupDeferreds.remove(address)?.complete(false)
+
         val device: BluetoothDevice = try {
             bluetoothAdapter.getRemoteDevice(address)
         } catch (e: IllegalArgumentException) {
@@ -199,10 +245,12 @@ class GattClientManager(
             autoReconnectAddresses.add(address)
         }
 
-        serviceDiscoveryDeferred = CompletableDeferred()
+        val deferred = CompletableDeferred<Boolean>()
+        setupDeferreds[address] = deferred
 
+        val gatt: BluetoothGatt?
         try {
-            val gatt = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            gatt = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                 device.connectGatt(context, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
             } else {
                 device.connectGatt(context, false, gattCallback)
@@ -210,21 +258,30 @@ class GattClientManager(
 
             if (gatt == null) {
                 Log.e(TAG, "Failed to start GATT connection to $address")
+                setupDeferreds.remove(address)
                 updateState(address, ConnectionState.FAILED)
                 return false
             }
+
+            // Store reference so we can clean up on timeout
+            pendingGatts[address] = gatt
         } catch (e: SecurityException) {
             Log.e(TAG, "Missing Bluetooth connect permission", e)
+            setupDeferreds.remove(address)
             updateState(address, ConnectionState.FAILED)
             return false
         }
 
-        // Wait for connection setup to complete
+        // Wait for full connection setup (connect → discover → MTU → subscribe)
         val result = withTimeoutOrNull(BluetoothConstants.CONNECTION_TIMEOUT_MS) {
-            serviceDiscoveryDeferred?.await()
+            deferred.await()
         } ?: false
 
         if (!result) {
+            Log.w(TAG, "Connection to $address timed out or failed — cleaning up GATT")
+            // Clean up the leaked GATT connection
+            cleanupPendingGatt(address)
+            setupDeferreds.remove(address)
             updateState(address, ConnectionState.FAILED)
         }
 
@@ -236,6 +293,8 @@ class GattClientManager(
         reconnectJobs[address]?.cancel()
         reconnectJobs.remove(address)
         reconnectAttempts.remove(address)
+        setupDeferreds.remove(address)?.complete(false)
+        cleanupPendingGatt(address)
 
         val gatt = connections.remove(address)
         try {
@@ -254,6 +313,22 @@ class GattClientManager(
         reconnectJobs.clear()
         reconnectAttempts.clear()
 
+        // Complete all pending setup deferreds
+        setupDeferreds.forEach { (_, deferred) -> deferred.complete(false) }
+        setupDeferreds.clear()
+
+        // Clean up pending (not yet connected) GATTs
+        pendingGatts.forEach { (address, gatt) ->
+            try {
+                gatt.disconnect()
+                gatt.close()
+            } catch (e: SecurityException) {
+                Log.e(TAG, "Security exception cleaning up pending GATT $address", e)
+            }
+        }
+        pendingGatts.clear()
+
+        // Clean up established connections
         connections.forEach { (address, gatt) ->
             try {
                 gatt.disconnect()
@@ -295,18 +370,19 @@ class GattClientManager(
     }
 
     private fun subscribeToNotifications(gatt: BluetoothGatt) {
+        val address = gatt.device.address
         try {
             val service = gatt.getService(BluetoothConstants.SERVICE_UUID)
             if (service == null) {
-                Log.e(TAG, "ProxiChat service not found on remote device")
-                serviceDiscoveryDeferred?.complete(false)
+                Log.e(TAG, "ProxiChat service not found on remote device $address")
+                setupDeferreds.remove(address)?.complete(false)
                 return
             }
 
             val notifyChar = service.getCharacteristic(BluetoothConstants.MESSAGE_NOTIFY_CHAR_UUID)
             if (notifyChar == null) {
-                Log.e(TAG, "Notify characteristic not found")
-                serviceDiscoveryDeferred?.complete(false)
+                Log.e(TAG, "Notify characteristic not found on $address")
+                setupDeferreds.remove(address)?.complete(false)
                 return
             }
 
@@ -315,16 +391,53 @@ class GattClientManager(
             val descriptor = notifyChar.getDescriptor(BluetoothConstants.CCCD_UUID)
             if (descriptor != null) {
                 descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-                gatt.writeDescriptor(descriptor)
+                val written = gatt.writeDescriptor(descriptor)
+                if (!written) {
+                    Log.e(TAG, "writeDescriptor returned false for $address")
+                    setupDeferreds.remove(address)?.complete(false)
+                }
             } else {
                 // Some devices work without explicit CCCD write
-                connections[gatt.device.address] = gatt
-                updateState(gatt.device.address, ConnectionState.CONNECTED)
-                serviceDiscoveryDeferred?.complete(true)
+                pendingGatts.remove(address)
+                connections[address] = gatt
+                updateState(address, ConnectionState.CONNECTED)
+                setupDeferreds.remove(address)?.complete(true)
             }
         } catch (e: SecurityException) {
             Log.e(TAG, "Security exception subscribing to notifications", e)
-            serviceDiscoveryDeferred?.complete(false)
+            setupDeferreds.remove(address)?.complete(false)
+        }
+    }
+
+    /**
+     * Clear Android's GATT service cache via hidden API.
+     * Without this, Android returns stale cached services if the remote device
+     * restarted or changed its GATT database since the last connection.
+     */
+    private fun refreshGattCache(gatt: BluetoothGatt): Boolean {
+        return try {
+            val method = gatt.javaClass.getMethod("refresh")
+            val result = method.invoke(gatt) as? Boolean ?: false
+            Log.d(TAG, "GATT cache refresh: $result")
+            result
+        } catch (e: Exception) {
+            Log.w(TAG, "GATT cache refresh not available: ${e.message}")
+            false
+        }
+    }
+
+    /**
+     * Close and remove a pending (not yet fully connected) GATT reference.
+     * Prevents Android GATT resource exhaustion after failed connection attempts.
+     */
+    private fun cleanupPendingGatt(address: String) {
+        val gatt = pendingGatts.remove(address) ?: return
+        try {
+            gatt.disconnect()
+            gatt.close()
+            Log.d(TAG, "Cleaned up pending GATT for $address")
+        } catch (e: SecurityException) {
+            Log.e(TAG, "Security exception cleaning up pending GATT", e)
         }
     }
 
@@ -345,7 +458,7 @@ class GattClientManager(
 
         reconnectJobs[address]?.cancel()
         reconnectJobs[address] = scope.launch {
-            val delayMs = BluetoothConstants.RECONNECT_DELAY_MS * (attempts + 1) // Exponential-ish backoff
+            val delayMs = BluetoothConstants.RECONNECT_DELAY_MS * (attempts + 1)
             Log.d(TAG, "Scheduling reconnect to $address in ${delayMs}ms (attempt ${attempts + 1})")
             delay(delayMs)
             reconnectAttempts[address] = attempts + 1

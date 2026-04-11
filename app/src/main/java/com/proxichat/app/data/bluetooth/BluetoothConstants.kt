@@ -45,7 +45,7 @@ object BluetoothConstants {
     // Timeouts
     const val SCAN_DURATION_MS = 12_000L
     const val SCAN_INTERVAL_MS = 15_000L
-    const val CONNECTION_TIMEOUT_MS = 10_000L
+    const val CONNECTION_TIMEOUT_MS = 15_000L
     const val RECONNECT_DELAY_MS = 3_000L
     const val MAX_RECONNECT_ATTEMPTS = 5
     const val DEVICE_STALE_TIMEOUT_MS = 30_000L

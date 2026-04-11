@@ -1,6 +1,5 @@
 package com.proxichat.app.data.bluetooth
 
-import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothGatt
 import android.bluetooth.BluetoothGattCharacteristic
@@ -12,12 +11,14 @@ import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
 import android.content.Context
 import android.util.Log
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -66,7 +67,15 @@ class GattServerManager(
     private val _isRunning = MutableStateFlow(false)
     val isRunning: StateFlow<Boolean> = _isRunning.asStateFlow()
 
+    private var serviceAddedDeferred: CompletableDeferred<Boolean>? = null
+
     private val gattCallback = object : BluetoothGattServerCallback() {
+
+        override fun onServiceAdded(status: Int, service: BluetoothGattService?) {
+            val success = status == BluetoothGatt.GATT_SUCCESS
+            Log.d(TAG, "onServiceAdded: uuid=${service?.uuid}, success=$success, status=$status")
+            serviceAddedDeferred?.complete(success)
+        }
 
         override fun onConnectionStateChange(device: BluetoothDevice, status: Int, newState: Int) {
             try {
@@ -189,22 +198,38 @@ class GattServerManager(
         }
     }
 
-    fun start() {
-        if (_isRunning.value) return
+    suspend fun start(): Boolean {
+        if (_isRunning.value) return true
 
         try {
             gattServer = bluetoothManager.openGattServer(context, gattCallback)
             if (gattServer == null) {
                 Log.e(TAG, "Failed to open GATT server")
-                return
+                return false
             }
 
             val service = createService()
+            serviceAddedDeferred = CompletableDeferred()
             gattServer?.addService(service)
+
+            // Wait for onServiceAdded callback — service is not queryable until this fires
+            val added = withTimeoutOrNull(5_000L) {
+                serviceAddedDeferred?.await()
+            } ?: false
+
+            if (!added) {
+                Log.e(TAG, "GATT service registration timed out or failed")
+                gattServer?.close()
+                gattServer = null
+                return false
+            }
+
             _isRunning.value = true
-            Log.d(TAG, "GATT server started")
+            Log.d(TAG, "GATT server started — service registered successfully")
+            return true
         } catch (e: SecurityException) {
             Log.e(TAG, "Missing Bluetooth connect permission", e)
+            return false
         }
     }
 
