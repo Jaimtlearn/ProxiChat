@@ -116,6 +116,10 @@ class MessageProtocol(private val gson: Gson = Gson()) {
         return try {
             val json = String(data, Charsets.UTF_8)
             val message = gson.fromJson(json, ProtocolMessage::class.java)
+            if (message == null) {
+                android.util.Log.e("MessageProtocol", "Gson returned null for: ${json.take(200)}")
+                return null
+            }
             if (message.encrypted && encryptionKey != null) {
                 val encryptedData = Base64.decode(message.payload["data"] as String, Base64.NO_WRAP)
                 val decrypted = decrypt(encryptedData)
@@ -124,6 +128,7 @@ class MessageProtocol(private val gson: Gson = Gson()) {
                 message
             }
         } catch (e: Exception) {
+            android.util.Log.e("MessageProtocol", "Deserialization failed: ${e.message}, data: ${String(data, Charsets.UTF_8).take(200)}")
             null
         }
     }

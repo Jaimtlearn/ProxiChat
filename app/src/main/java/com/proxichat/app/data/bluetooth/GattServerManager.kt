@@ -116,12 +116,16 @@ class GattServerManager(
             value: ByteArray
         ) {
             try {
+                Log.d(TAG, "Write request from ${device.address}: char=${characteristic.uuid}, ${value.size} bytes, preparedWrite=$preparedWrite, responseNeeded=$responseNeeded")
                 when (characteristic.uuid) {
                     BluetoothConstants.MESSAGE_WRITE_CHAR_UUID -> {
-                        // Try to reassemble chunks
                         val assembled = protocol.reassemble(value)
                         if (assembled != null) {
-                            _incomingMessages.tryEmit(IncomingMessage(device.address, assembled))
+                            Log.d(TAG, "Message reassembled from ${device.address}: ${assembled.size} bytes")
+                            val emitted = _incomingMessages.tryEmit(IncomingMessage(device.address, assembled))
+                            if (!emitted) {
+                                Log.e(TAG, "Failed to emit incoming message — buffer full")
+                            }
                         }
 
                         if (responseNeeded) {
@@ -129,6 +133,7 @@ class GattServerManager(
                         }
                     }
                     else -> {
+                        Log.w(TAG, "Write to unknown characteristic ${characteristic.uuid} from ${device.address}")
                         if (responseNeeded) {
                             gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_FAILURE, 0, null)
                         }

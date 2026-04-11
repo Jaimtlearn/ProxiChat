@@ -225,4 +225,11 @@ class BleScanner(private val bluetoothAdapter: BluetoothAdapter) {
             put(address, current.copy(connectionState = state))
         }
     }
+
+    fun updateDeviceDisplayName(address: String, name: String) {
+        val current = _discoveredDevices.value[address] ?: return
+        _discoveredDevices.value = _discoveredDevices.value.toMutableMap().apply {
+            put(address, current.copy(displayName = name))
+        }
+    }
 }

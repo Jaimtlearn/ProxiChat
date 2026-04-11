@@ -77,11 +77,12 @@ class GattClientManager(
         override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
             try {
                 val address = gatt.device.address
-                Log.d(TAG, "Connection state changed: $address -> $newState (status: $status)")
+                Log.d(TAG, "onConnectionStateChange: $address status=$status newState=$newState")
 
                 if (status != BluetoothGatt.GATT_SUCCESS && newState == BluetoothProfile.STATE_DISCONNECTED) {
-                    Log.e(TAG, "Connection failed for $address with GATT status $status")
-                    cleanupPendingGatt(address)
+                    Log.e(TAG, "Connection failed for $address with GATT status $status (0x${status.toString(16)})")
+                    // Remove from pendingGatts without calling disconnect/close — we close via gatt param below
+                    pendingGatts.remove(address)
                     setupDeferreds.remove(address)?.complete(false)
                     connections.remove(address)
                     connectionMtus.remove(address)
@@ -97,21 +98,25 @@ class GattClientManager(
                     BluetoothProfile.STATE_CONNECTED -> {
                         updateState(address, ConnectionState.CONNECTING)
                         reconnectAttempts[address] = 0
-                        // Clear GATT cache to avoid stale service data, then discover
                         refreshGattCache(gatt)
-                        // Delay before service discovery — many Android devices need this
+                        // Delay before service discovery — many Android BLE stacks need this
                         scope.launch {
                             delay(SERVICE_DISCOVERY_DELAY_MS)
                             try {
-                                gatt.discoverServices()
-                            } catch (e: SecurityException) {
-                                Log.e(TAG, "Permission denied for discoverServices", e)
+                                val started = gatt.discoverServices()
+                                if (!started) {
+                                    Log.e(TAG, "discoverServices() returned false for $address")
+                                    setupDeferreds.remove(address)?.complete(false)
+                                }
+                            } catch (e: Exception) {
+                                Log.e(TAG, "Exception calling discoverServices for $address", e)
                                 setupDeferreds.remove(address)?.complete(false)
                             }
                         }
                     }
                     BluetoothProfile.STATE_DISCONNECTED -> {
-                        cleanupPendingGatt(address)
+                        // Remove from pendingGatts without calling disconnect — already disconnected
+                        pendingGatts.remove(address)
                         setupDeferreds.remove(address)?.complete(false)
                         connections.remove(address)
                         connectionMtus.remove(address)

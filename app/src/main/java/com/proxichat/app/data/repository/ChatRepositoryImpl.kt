@@ -1,5 +1,6 @@
 package com.proxichat.app.data.repository
 
+import android.util.Log
 import com.proxichat.app.data.bluetooth.BluetoothController
 import com.proxichat.app.data.db.dao.MessageDao
 import com.proxichat.app.data.db.entity.MessageEntity
@@ -24,33 +25,47 @@ class ChatRepositoryImpl @Inject constructor(
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
+    companion object {
+        private const val TAG = "ChatRepositoryImpl"
+    }
+
     init {
         // Listen for incoming messages and ACKs from Bluetooth
         scope.launch {
             bluetoothController.receivedMessages.collect { received ->
-                when (received.message.type) {
-                    "MSG" -> {
-                        val text = received.message.payload["text"] as? String ?: return@collect
-                        val incomingMessage = ChatMessage(
-                            id = received.message.id,
-                            deviceAddress = received.senderAddress,
-                            text = text,
-                            timestamp = received.message.timestamp,
-                            isOutgoing = false,
-                            status = MessageStatus.DELIVERED
-                        )
-                        saveIncomingMessage(incomingMessage)
-                    }
-                    "ACK" -> {
-                        val messageId = received.message.payload["messageId"] as? String ?: return@collect
-                        val statusStr = received.message.payload["status"] as? String ?: return@collect
-                        val status = try {
-                            MessageStatus.valueOf(statusStr)
-                        } catch (e: IllegalArgumentException) {
-                            MessageStatus.DELIVERED
+                try {
+                    Log.d(TAG, "Received ${received.message.type} from ${received.senderAddress}, payload keys: ${received.message.payload.keys}")
+                    when (received.message.type) {
+                        "MSG" -> {
+                            val text = received.message.payload["text"] as? String
+                            if (text == null) {
+                                Log.e(TAG, "MSG payload missing 'text' key. Payload: ${received.message.payload}")
+                                return@collect
+                            }
+                            val incomingMessage = ChatMessage(
+                                id = received.message.id,
+                                deviceAddress = received.senderAddress,
+                                text = text,
+                                timestamp = received.message.timestamp,
+                                isOutgoing = false,
+                                status = MessageStatus.DELIVERED
+                            )
+                            saveIncomingMessage(incomingMessage)
+                            Log.d(TAG, "Saved incoming message from ${received.senderAddress}: ${text.take(50)}")
                         }
-                        updateMessageStatus(messageId, status)
+                        "ACK" -> {
+                            val messageId = received.message.payload["messageId"] as? String ?: return@collect
+                            val statusStr = received.message.payload["status"] as? String ?: return@collect
+                            val status = try {
+                                MessageStatus.valueOf(statusStr)
+                            } catch (e: IllegalArgumentException) {
+                                MessageStatus.DELIVERED
+                            }
+                            updateMessageStatus(messageId, status)
+                        }
                     }
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error processing received message", e)
                 }
             }
         }
